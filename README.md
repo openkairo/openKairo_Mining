@@ -1,3 +1,9 @@
+![Version](https://img.shields.io/github/v/release/openkairo/openKairo_Mining?style=for-the-badge&color=fdd835&label=Version)
+![HACS](https://img.shields.io/badge/HACS-Custom_Integration-orange?style=for-the-badge&logo=home-assistant)
+![ESPHome](https://img.shields.io/badge/ESPHome-Compatible-00b4d8?style=for-the-badge)
+![License](https://img.shields.io/github/license/openkairo/openKairo_Mining?style=for-the-badge&color=orange)
+
+
 # OpenKairo Mining v1.1 ⚡
 
 Ein Custom Component (Integration) für Home Assistant, um Krypto-Miner intelligent nach PV-Überschuss zu steuern. *Powered by OpenKairo*
