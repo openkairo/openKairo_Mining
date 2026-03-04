@@ -1,7 +1,6 @@
 ![Version](https://img.shields.io/github/v/release/openkairo/openKairo_Mining?style=for-the-badge&color=fdd835&label=Version)
 ![HACS](https://img.shields.io/badge/HACS-Custom_Integration-orange?style=for-the-badge&logo=home-assistant)
-![ESPHome](https://img.shields.io/badge/ESPHome-Compatible-00b4d8?style=for-the-badge)
-![License](https://img.shields.io/github/license/openkairo/openKairo_Mining?style=for-the-badge&color=orange)
+![License](https://img.shields.io/github/license/openkairo/openKairo_Mining?style=for-the-badge&color=purple)
 
 
 # OpenKairo Mining v1.1 ⚡
