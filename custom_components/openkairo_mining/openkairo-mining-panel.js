@@ -475,8 +475,10 @@ class OpenKairoMiningPanel extends LitElement {
         const data = await response.json();
         if (data.config && data.config.miners) {
           this.config = data.config;
+          this.states = data.states || {};
         } else {
           this.config = { miners: [] };
+          this.states = {};
         }
       }
     } catch (error) {
@@ -545,7 +547,14 @@ class OpenKairoMiningPanel extends LitElement {
       standby_watchdog_enabled: false,
       standby_switch: '',
       standby_power: 100,
-      standby_delay: 10
+      standby_delay: 10,
+      soft_start_enabled: false,
+      soft_stop_enabled: false,
+      soft_start_steps: '100, 500, 1000',
+      soft_stop_steps: '1000, 500, 100',
+      soft_interval: 60,
+      soft_target_power: 1200,
+      switch_2: ''
     };
   }
 
@@ -576,9 +585,11 @@ class OpenKairoMiningPanel extends LitElement {
     }
   }
 
-  toggleMiner(entityId) {
-    if (!this.hass || !entityId) return;
-    this.hass.callService("switch", "toggle", { entity_id: entityId });
+  toggleMiner(miner) {
+    if (!this.hass || !miner.switch) return;
+    const switches = [miner.switch];
+    if (miner.switch_2) switches.push(miner.switch_2);
+    this.hass.callService("switch", "toggle", { entity_id: switches });
   }
 
   callMinerService(miner, serviceName, serviceData = {}) {
@@ -606,6 +617,14 @@ class OpenKairoMiningPanel extends LitElement {
 
   handleFormInput(e) {
     const { name, value, type, checked } = e.target;
+    
+    if (name === 'switch_2' && value && value !== this.editForm.switch_2) {
+        if (!confirm("⚠️ WARNUNG: Der Betrieb eines Miners an zwei getrennten smarten Steckdosen ist eigentlich nicht zulässig und erfolgt auf eigene Gefahr! \n\nEs kann zu Problemen beim Leistungsschutz oder zur Überlastung führen. Möchtest du fortfahren?")) {
+            e.target.value = '';
+            return;
+        }
+    }
+
     this.editForm = { ...this.editForm, [name]: type === 'checkbox' ? checked : value };
     this.requestUpdate();
   }
@@ -667,7 +686,7 @@ class OpenKairoMiningPanel extends LitElement {
         const stateObj = this.hass.states[entityId];
         return {
           id: entityId,
-          name: stateObj.attributes.friendly_name ? `${stateObj.attributes.friendly_name} (${entityId})` : entityId
+          name: stateObj.attributes?.friendly_name ? `${stateObj.attributes.friendly_name} (${entityId})` : entityId
         };
       });
   }
@@ -675,7 +694,7 @@ class OpenKairoMiningPanel extends LitElement {
   render() {
     return html`
       <div class="header">
-        <h1>₿ OpenKairo Mining ⚡ <span style="font-size: 0.5em; vertical-align: middle; background: #F7931A; border-radius: 4px; padding: 2px 6px; color: #fff; margin-left: 8px;">v1.1</span></h1>
+        <h1>₿ OpenKairo Mining ⚡ <span style="font-size: 0.5em; vertical-align: middle; background: #F7931A; border-radius: 4px; padding: 2px 6px; color: #fff; margin-left: 8px;">v1.2</span></h1>
         <p class="subtitle">Intelligente Miner-Steuerung</p>
       </div>
 
@@ -749,7 +768,7 @@ class OpenKairoMiningPanel extends LitElement {
         <div class="tech-box" style="margin-top: 25px; text-align: center; border-color: rgba(247, 147, 26, 0.4); background: rgba(247, 147, 26, 0.05);">
           <h3 style="margin-top:0; color:#fff;">☕ Unterstütze das Projekt</h3>
           <p style="color:#bbb; margin-bottom: 25px;">OpenKairo ist ein Community-Projekt. Wenn dir die Integration hilft, Energiekosten zu sparen, freuen wir uns über eine kleine Unterstützung für die Weiterentwicklung!</p>
-          <a href="https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=info@low-streaming.de&currency_code=EUR&source=url" target="_blank" class="btn-primary" style="display:inline-block; text-decoration:none; width:auto; padding: 15px 40px; border-radius:30px; line-height:1;">
+          <a href="https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=info@openkairo.de&currency_code=EUR&source=url" target="_blank" class="btn-primary" style="display:inline-block; text-decoration:none; width:auto; padding: 15px 40px; border-radius:30px; line-height:1;">
             ☕ Kaffee / Energy spendieren (PayPal)
           </a>
         </div>
@@ -796,25 +815,25 @@ class OpenKairoMiningPanel extends LitElement {
       let hashrateValue = '';
       if (miner.hashrate_sensor && this.hass && this.hass.states[miner.hashrate_sensor]) {
         const stateObj = this.hass.states[miner.hashrate_sensor];
-        hashrateValue = stateObj.state + ' ' + (stateObj.attributes.unit_of_measurement || 'TH/s');
+        hashrateValue = stateObj.state + ' ' + (stateObj.attributes?.unit_of_measurement || 'TH/s');
       }
 
       let tempValue = '';
       if (miner.temp_sensor && this.hass && this.hass.states[miner.temp_sensor]) {
         const stateObj = this.hass.states[miner.temp_sensor];
-        tempValue = stateObj.state + ' ' + (stateObj.attributes.unit_of_measurement || '°C');
+        tempValue = stateObj.state + ' ' + (stateObj.attributes?.unit_of_measurement || '°C');
       }
 
       let powerConsumptionValue = '';
       if (miner.power_consumption_sensor && this.hass && this.hass.states[miner.power_consumption_sensor]) {
         const stateObj = this.hass.states[miner.power_consumption_sensor];
-        powerConsumptionValue = stateObj.state + ' ' + (stateObj.attributes.unit_of_measurement || 'W');
+        powerConsumptionValue = stateObj.state + ' ' + (stateObj.attributes?.unit_of_measurement || 'W');
       }
 
       let batterySOCValue = '';
       if (miner.battery_sensor && this.hass && this.hass.states[miner.battery_sensor]) {
         const stateObj = this.hass.states[miner.battery_sensor];
-        batterySOCValue = stateObj.state + ' ' + (stateObj.attributes.unit_of_measurement || '%');
+        batterySOCValue = stateObj.state + ' ' + (stateObj.attributes?.unit_of_measurement || '%');
       }
 
       // Profitabilitäts-Berechnung
@@ -831,7 +850,7 @@ class OpenKairoMiningPanel extends LitElement {
       } else if ((!miner.coin_price_source || miner.coin_price_source === 'sensor') && miner.coin_price_sensor && this.hass && this.hass.states[miner.coin_price_sensor]) {
         const priceState = this.hass.states[miner.coin_price_sensor];
         currentCoinPrice = parseFloat(priceState.state) || 0;
-        if (priceState.attributes.unit_of_measurement) {
+        if (priceState.attributes?.unit_of_measurement) {
           fiatSymbol = priceState.attributes.unit_of_measurement.replace('/BTC', '').replace('/ETH', '').replace('/KAS', '').trim();
         }
       }
@@ -841,7 +860,7 @@ class OpenKairoMiningPanel extends LitElement {
         const hrValue = parseFloat(hrState.state) || 0;
 
         let hrInTH = hrValue;
-        const unit = (hrState.attributes.unit_of_measurement || 'TH/s').toUpperCase();
+        const unit = (hrState.attributes?.unit_of_measurement || 'TH/s').toUpperCase();
         if (unit.includes('GH')) hrInTH = hrValue / 1000;
         if (unit.includes('PH')) hrInTH = hrValue * 1000;
 
@@ -869,7 +888,7 @@ class OpenKairoMiningPanel extends LitElement {
       } else if ((!miner.electricity_price_source || miner.electricity_price_source === 'sensor') && miner.electricity_price_sensor && this.hass && this.hass.states[miner.electricity_price_sensor]) {
         const eleState = this.hass.states[miner.electricity_price_sensor];
         electricityPrice = parseFloat(eleState.state) || 0;
-        const priceUnit = eleState.attributes.unit_of_measurement || '';
+        const priceUnit = eleState.attributes?.unit_of_measurement || '';
         if (priceUnit.toLowerCase().includes('cent') || priceUnit === 'ct' || priceUnit === '¢' || electricityPrice > 5) {
           electricityPrice = electricityPrice / 100; // assume >5 means cents if not EUR exactly
         }
@@ -896,9 +915,15 @@ class OpenKairoMiningPanel extends LitElement {
         powerObj = this.hass.states[miner.power_entity];
       }
 
-      const friendlySwitchName = this.hass && this.hass.states[miner.switch] && this.hass.states[miner.switch].attributes.friendly_name
+      const friendlySwitchName = this.hass && this.hass.states[miner.switch] && this.hass.states[miner.switch].attributes?.friendly_name
         ? this.hass.states[miner.switch].attributes.friendly_name
         : miner.switch;
+      
+      const friendlySwitchName2 = miner.switch_2 && this.hass && this.hass.states[miner.switch_2] && this.hass.states[miner.switch_2].attributes?.friendly_name
+        ? this.hass.states[miner.switch_2].attributes.friendly_name
+        : miner.switch_2;
+
+      let stateObj = this.states ? this.states[miner.id] : null;
 
       return html`
             <div class="miner-card">
@@ -909,10 +934,10 @@ class OpenKairoMiningPanel extends LitElement {
               </div>
               
               <div class="miner-status">
-                <span class="status-badge ${switchState === 'on' ? 'on' : switchState === 'off' ? 'off' : ''}">
-                  ${switchState === 'on' ? 'MINING 🚀' : switchState === 'off' ? 'STANDBY 💤' : switchState}
+                <span class="status-badge ${switchState === 'on' ? 'on' : switchState === 'off' ? 'off' : ''} ${stateObj && stateObj.ramping ? 'pulse-orange' : ''}">
+                  ${stateObj && stateObj.ramping === 'up' ? 'RAMPING UP ⚡' : stateObj && stateObj.ramping === 'down' ? 'RAMPING DOWN 💤' : (switchState === 'on' ? 'MINING 🚀' : switchState === 'off' ? 'STANDBY 💤' : switchState)}
                 </span>
-                <button class="btn-power ${switchState === 'on' ? 'on' : ''}" @click="${() => this.toggleMiner(miner.switch)}" title="Manuell ein/ausschalten">
+                <button class="btn-power ${switchState === 'on' ? 'on' : ''}" @click="${() => this.toggleMiner(miner)}" title="Manuell ein/ausschalten">
                   ⏻
                 </button>
               </div>
@@ -930,12 +955,12 @@ class OpenKairoMiningPanel extends LitElement {
               <div class="power-limit-box" style="margin-top: 15px; background: rgba(0,0,0,0.2); padding: 15px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
                   <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
                       <span style="font-size: 0.85em; color: #888;">Power Limit (S9/ASIC)</span>
-                      <strong style="color: #F7931A;">${powerObj.state} ${powerObj.attributes.unit_of_measurement || 'W'}</strong>
+                      <strong style="color: #F7931A;">${powerObj.state} ${powerObj.attributes?.unit_of_measurement || 'W'}</strong>
                   </div>
                   <input type="range" 
-                         min="${powerObj.attributes.min || 0}" 
-                         max="${powerObj.attributes.max || 100}" 
-                         step="${powerObj.attributes.step || 1}" 
+                         min="${powerObj.attributes?.min || 0}" 
+                         max="${powerObj.attributes?.max || 100}" 
+                         step="${powerObj.attributes?.step || 1}" 
                          .value="${powerObj.state}" 
                          @change="${(e) => this.setPowerLimit(miner.power_entity, e.target.value)}"
                          style="width: 100%; accent-color: #F7931A; cursor: pointer;">
@@ -945,7 +970,7 @@ class OpenKairoMiningPanel extends LitElement {
               
               <div class="miner-details">
                 <p><b>Modus:</b> <span class="accent-text">${modeMap[miner.mode] || 'Unbekannt'}</span></p>
-                <p><b>Dose:</b> ${friendlySwitchName || 'Nicht gesetzt'}</p>
+                <p><b>Dose:</b> ${friendlySwitchName || 'Nicht gesetzt'} ${friendlySwitchName2 ? html` + ${friendlySwitchName2}` : ''}</p>
                 
                 ${miner.mode === 'pv' ? html`
                   <div class="tech-box">
@@ -962,7 +987,7 @@ class OpenKairoMiningPanel extends LitElement {
                     ` : ''}
                     ${miner.forecast_sensor && this.hass && this.hass.states[miner.forecast_sensor] ? html`
                       <div style="border-top: 1px dashed rgba(255,255,255,0.1); padding-top: 8px;">
-                          <p><b>Prognose heute:</b> <span class="highlight-val">${this.hass.states[miner.forecast_sensor].state} ${this.hass.states[miner.forecast_sensor].attributes.unit_of_measurement || 'kWh'}</span></p>
+                          <p><b>Prognose heute:</b> <span class="highlight-val">${this.hass.states[miner.forecast_sensor].state} ${this.hass.states[miner.forecast_sensor].attributes?.unit_of_measurement || 'kWh'}</span></p>
                           <p class="small-text mt-1">🌤️ Limit: Miner startet nur ab ${miner.forecast_min || 0} kWh</p>
                       </div>
                     ` : ''}
@@ -1147,11 +1172,17 @@ class OpenKairoMiningPanel extends LitElement {
           <small>Lade ein Foto deines Miners hoch (wird lokal im Browser/Dashboard gespeichert).</small>
         </div>
 
-        <div class="form-group">
-          <label>Schalter / Steckdose</label>
-          <openkairo-entity-picker name="switch" placeholder="-- Steckdose suchen oder wählen --" .value="${this.editForm.switch || ''}" .entities="${switchOptions}" @change="${this.handleFormInput}"></openkairo-entity-picker>
-          <small>Die Steckdose oder der 'hass-miner' Switch, an dem der Miner pausiert wird.</small>
+        <div class="form-row">
+            <div class="form-group flex-1">
+              <label>Schalter / Steckdose 1</label>
+              <openkairo-entity-picker name="switch" placeholder="-- Steckdose 1 wählen --" .value="${this.editForm.switch || ''}" .entities="${switchOptions}" @change="${this.handleFormInput}"></openkairo-entity-picker>
+            </div>
+            <div class="form-group flex-1">
+              <label>Schalter / Steckdose 2 (Optional)</label>
+              <openkairo-entity-picker name="switch_2" placeholder="-- Optionale Steckdose 2 --" .value="${this.editForm.switch_2 || ''}" .entities="${switchOptions}" @change="${this.handleFormInput}"></openkairo-entity-picker>
+            </div>
         </div>
+        <small style="margin-top: -15px; display: block; margin-bottom: 20px;">Die Steckdose(n) oder der 'hass-miner' Switch, an dem der Miner pausiert wird.</small>
 
         <div class="mode-section btc-section" style="margin-top: 20px; border-color: rgba(255,255,255,0.1); background: rgba(0,0,0,0.2);">
             <h3 style="color: #aaa; font-size: 1.1em;">🔌 Hass-Miner Integration (Optional)</h3>
@@ -1176,8 +1207,54 @@ class OpenKairoMiningPanel extends LitElement {
                 <div class="form-group flex-1">
                     <label>Power Limit ('number' Entität)</label>
                     <openkairo-entity-picker name="power_entity" placeholder="-- Power Limit suchen --" .value="${this.editForm.power_entity || ''}" .entities="${numberOptions}" @change="${this.handleFormInput}"></openkairo-entity-picker>
-                    <small>Optional: ASIC Slider für Dashboard.</small>
+                    <small>Wichtig für Soft Start/Stop (S9/ASIC).</small>
                 </div>
+            </div>
+
+            <div style="margin-top: 20px; padding: 15px; border: 1px dashed rgba(247, 147, 26, 0.3); border-radius: 8px; background: rgba(247, 147, 26, 0.05);">
+                <h4 style="margin: 0 0 10px 0; color: #F7931A; display: flex; align-items: center; gap: 8px;">🚀 Soft Start / Stop (Mehrstufiges Hochfahren)</h4>
+                
+                <div class="form-row">
+                    <div class="form-group flex-1">
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="checkbox" name="soft_start_enabled" .checked="${this.editForm.soft_start_enabled}" @change="${this.handleFormInput}" style="width: 16px; height: 16px; margin: 0; accent-color: #F7931A;">
+                            <b>Soft-Start aktivieren</b>
+                        </label>
+                    </div>
+                    <div class="form-group flex-1">
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                            <input type="checkbox" name="soft_stop_enabled" .checked="${this.editForm.soft_stop_enabled}" @change="${this.handleFormInput}" style="width: 16px; height: 16px; margin: 0; accent-color: #F7931A;">
+                            <b>Soft-Stop aktivieren</b>
+                        </label>
+                    </div>
+                </div>
+
+                ${this.editForm.soft_start_enabled || this.editForm.soft_stop_enabled ? html`
+                    <div class="form-row">
+                        <div class="form-group flex-1">
+                            <label>Start-Abstufungen (Watt)</label>
+                            <input type="text" name="soft_start_steps" placeholder="100, 500, 1000" .value="${this.editForm.soft_start_steps || '100, 500, 1000'}" @input="${this.handleFormInput}">
+                            <small>Kommasepariert, z.B. 100, 500, 1000</small>
+                        </div>
+                        <div class="form-group flex-1">
+                            <label>Stopp-Abstufungen (Watt)</label>
+                            <input type="text" name="soft_stop_steps" placeholder="1000, 500, 100" .value="${this.editForm.soft_stop_steps || '1000, 500, 100'}" @input="${this.handleFormInput}">
+                            <small>Kommasepariert, z.B. 1000, 500, 100</small>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group flex-1">
+                            <label>Intervall (Sekunden)</label>
+                            <input type="number" name="soft_interval" min="10" .value="${this.editForm.soft_interval || 60}" @input="${this.handleFormInput}">
+                            <small>Wartezeit zwischen den Stufen.</small>
+                        </div>
+                        <div class="form-group flex-1">
+                             <label>End-Leistung (Watt)</label>
+                             <input type="number" name="soft_target_power" .value="${this.editForm.soft_target_power || 1200}" @input="${this.handleFormInput}">
+                             <small>Zielwert nach dem Hochfahren.</small>
+                        </div>
+                    </div>
+                ` : ''}
             </div>
         </div>
 
@@ -1822,6 +1899,17 @@ class OpenKairoMiningPanel extends LitElement {
       .status-badge.off { 
         background: rgba(231, 76, 60, 0.1); color: #e74c3c; 
         border-color: rgba(231, 76, 60, 0.3); 
+      }
+      .pulse-orange { 
+        animation: pulse-orange 2s infinite; 
+        background: rgba(247, 147, 26, 0.1) !important;
+        color: #F7931A !important;
+        border-color: rgba(247, 147, 26, 0.4) !important;
+      }
+      @keyframes pulse-orange {
+        0% { box-shadow: 0 0 0 0 rgba(247, 147, 26, 0.4); }
+        70% { box-shadow: 0 0 0 10px rgba(247, 147, 26, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(247, 147, 26, 0); }
       }
       
       .btn-power {
