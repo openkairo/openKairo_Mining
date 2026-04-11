@@ -1,185 +1,217 @@
+"""OpenKairo Miner Sensors - Final Consolidated Version."""
 import logging
+
 from homeassistant.components.sensor import (
     SensorEntity,
     SensorDeviceClass,
     SensorStateClass,
+    SensorEntityDescription,
+    EntityCategory,
 )
-from homeassistant.const import UnitOfTemperature, PERCENTAGE
+from homeassistant.const import (
+    UnitOfTemperature,
+    UnitOfPower,
+    UnitOfTime,
+    REVOLUTIONS_PER_MINUTE,
+)
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import async_get_miner_coordinator
-from .utils import _safe_get
+from .coordinator import MinerDataUpdateCoordinator
+from .utils import get_device_info
 
 _LOGGER = logging.getLogger(__name__)
 
+TERA_HASH_PER_SECOND = "TH/s"
+JOULES_PER_TERA_HASH = "J/TH"
+
+MINER_SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
+    "hashrate": SensorEntityDescription(
+        key="hashrate",
+        translation_key="hashrate",
+        native_unit_of_measurement=TERA_HASH_PER_SECOND,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    "ideal_hashrate": SensorEntityDescription(
+        key="ideal_hashrate",
+        translation_key="ideal_hashrate",
+        native_unit_of_measurement=TERA_HASH_PER_SECOND,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    "temperature": SensorEntityDescription(
+        key="temperature",
+        translation_key="temperature",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    "power_limit": SensorEntityDescription(
+        key="power_limit",
+        translation_key="power_limit",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        device_class=SensorDeviceClass.POWER,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    "miner_consumption": SensorEntityDescription(
+        key="miner_consumption",
+        translation_key="miner_consumption",
+        native_unit_of_measurement=UnitOfPower.WATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        device_class=SensorDeviceClass.POWER,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    "efficiency": SensorEntityDescription(
+        key="efficiency",
+        translation_key="efficiency",
+        native_unit_of_measurement=JOULES_PER_TERA_HASH,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    "uptime": SensorEntityDescription(
+        key="uptime",
+        translation_key="uptime",
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.TOTAL_INCREASING,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+}
+
+BOARD_SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
+    "board_temperature": SensorEntityDescription(
+        key="board_temperature",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    "chip_temperature": SensorEntityDescription(
+        key="chip_temperature",
+        native_unit_of_measurement=UnitOfTemperature.CELSIUS,
+        state_class=SensorStateClass.MEASUREMENT,
+        device_class=SensorDeviceClass.TEMPERATURE,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+    "board_hashrate": SensorEntityDescription(
+        key="board_hashrate",
+        native_unit_of_measurement=TERA_HASH_PER_SECOND,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+}
+
+FAN_SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
+    "fan_speed": SensorEntityDescription(
+        key="fan_speed",
+        native_unit_of_measurement=REVOLUTIONS_PER_MINUTE,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+    ),
+}
+
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
-    """Set up OpenKairo Miner sensors based on a config entry."""
-    if "ip_address" not in config_entry.data:
-        return
+    """Set up OpenKairo Miner sensors."""
+    if "ip_address" not in config_entry.data: return
 
     ip = config_entry.data["ip_address"]
     name = config_entry.title
-    user = config_entry.data.get("username")
-    password = config_entry.data.get("password")
-    ssh_user = config_entry.data.get("ssh_username")
-    ssh_password = config_entry.data.get("ssh_password")
-    
-    coordinator = await async_get_miner_coordinator(hass, DOMAIN, ip, name, user, password, ssh_user, ssh_password)
-    
-    # Dummy Config, um die restliche Klasse nicht komplett umschreiben zu müssen
-    miner_config = {"id": config_entry.entry_id}
-    
-    entities = [
-        MinerHashrateSensor(coordinator, miner_config),
-        MinerExpectedHashrateSensor(coordinator, miner_config),
-        MinerTempSensor(coordinator, miner_config),
-        MinerPowerSensor(coordinator, miner_config),
-        MinerEfficiencySensor(coordinator, miner_config),
-    ]
-    
-    # Optional Fans
-    for i in range(4):
-        entities.append(MinerFanSensor(coordinator, miner_config, i))
-         
-    async_add_entities(entities)
 
-class MinerBaseEntity(CoordinatorEntity):
-    """Base class for Miner entities."""
-    def __init__(self, coordinator, miner_config):
+    from .coordinator import async_get_miner_coordinator
+    coordinator = await async_get_miner_coordinator(hass, DOMAIN, ip, name)
+
+    try:
+        await coordinator.async_config_entry_first_refresh()
+    except: pass
+
+    sensors = []
+
+    # Main sensors
+    for key, desc in MINER_SENSOR_DESCRIPTIONS.items():
+        sensors.append(MinerSensor(coordinator, key, desc))
+
+    # Board sensors (Always 3 for stability)
+    num_boards = 3
+    if coordinator.data and coordinator.data.get("board_sensors"):
+         num_boards = max(len(coordinator.data["board_sensors"]), 3)
+         
+    for i in range(num_boards):
+        for key, desc in BOARD_SENSOR_DESCRIPTIONS.items():
+            sensors.append(MinerBoardSensor(coordinator, i, key, desc))
+
+    # Fan sensors (Always 4 for stability)
+    num_fans = 4
+    if coordinator.data and coordinator.data.get("fan_sensors"):
+         num_fans = max(len(coordinator.data["fan_sensors"]), 4)
+         
+    for i in range(num_fans):
+        sensors.append(MinerFanSensor(coordinator, i, "fan_speed", FAN_SENSOR_DESCRIPTIONS["fan_speed"]))
+
+    async_add_entities(sensors)
+
+
+class MinerSensor(CoordinatorEntity, SensorEntity):
+    def __init__(self, coordinator, sensor, description):
         super().__init__(coordinator)
-        self.miner_config = miner_config
-        self.miner_id = miner_config.get("id")
+        self._sensor = sensor
+        self.entity_description = description
         self._attr_has_entity_name = True
+        ip_slug = coordinator.miner_ip.replace(".", "_")
+        self._attr_unique_id = f"{DOMAIN}_{ip_slug}_{sensor}"
+
+    @property
+    def native_value(self):
+        if not self.coordinator.data: return None
+        return self.coordinator.data.get("miner_sensors", {}).get(self._sensor)
 
     @property
     def device_info(self):
-        return {
-            "identifiers": {(DOMAIN, self.coordinator.miner_ip)},
-            "name": self.coordinator.miner_name,
-            "manufacturer": "OpenKairo Miner",
-            "model": "Generic ASIC",
-        }
+        return get_device_info(DOMAIN, self.coordinator)
 
-class MinerHashrateSensor(MinerBaseEntity, SensorEntity):
-    """Sensor for Miner Hashrate."""
-    _attr_native_unit_of_measurement = "TH/s"
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_translation_key = "hashrate"
 
-    def __init__(self, coordinator, miner_config):
-        super().__init__(coordinator, miner_config)
-        self._attr_unique_id = f"{self.coordinator.miner_ip}_hashrate"
-        self._attr_name = f"{self.coordinator.miner_name} Hashrate"
+class MinerBoardSensor(CoordinatorEntity, SensorEntity):
+    def __init__(self, coordinator, board_num, sensor, description):
+        super().__init__(coordinator)
+        self._board_num = board_num
+        self._sensor = sensor
+        self.entity_description = description
+        self._attr_has_entity_name = True
+        self._attr_name = f"Board {board_num + 1} {description.key.replace('_', ' ').title()}"
+        ip_slug = coordinator.miner_ip.replace(".", "_")
+        self._attr_unique_id = f"{DOMAIN}_{ip_slug}_board_{board_num}_{sensor}"
 
     @property
     def native_value(self):
-        val = _safe_get(self.coordinator.data, ["hashrate"])
-        return round(val, 2) if val is not None else None
+        if not self.coordinator.data: return None
+        board_data = self.coordinator.data.get("board_sensors", {}).get(self._board_num)
+        return board_data.get(self._sensor) if board_data else None
 
-class MinerExpectedHashrateSensor(MinerBaseEntity, SensorEntity):
-    """Sensor for Miner Expected Hashrate."""
-    _attr_native_unit_of_measurement = "TH/s"
-    _attr_state_class = SensorStateClass.MEASUREMENT
-    
-    def __init__(self, coordinator, miner_config):
-        super().__init__(coordinator, miner_config)
-        self._attr_unique_id = f"{self.coordinator.miner_ip}_expected_hashrate"
-        self._attr_name = f"{self.coordinator.miner_name} Ziel-Hashrate"
+    @property
+    def device_info(self):
+        return get_device_info(DOMAIN, self.coordinator)
+
+
+class MinerFanSensor(CoordinatorEntity, SensorEntity):
+    def __init__(self, coordinator, fan_num, sensor, description):
+        super().__init__(coordinator)
+        self._fan_num = fan_num
+        self._sensor = sensor
+        self.entity_description = description
+        self._attr_has_entity_name = True
+        self._attr_name = f"Lüfter {fan_num + 1}"
+        ip_slug = coordinator.miner_ip.replace(".", "_")
+        self._attr_unique_id = f"{DOMAIN}_{ip_slug}_fan_{fan_num}"
 
     @property
     def native_value(self):
-        val = _safe_get(self.coordinator.data, ["expected_hashrate", "ideal_hashrate"])
-        return round(val, 2) if val is not None else None
-
-class MinerTempSensor(MinerBaseEntity, SensorEntity):
-    """Sensor for Miner Temperature."""
-    _attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
-    _attr_device_class = SensorDeviceClass.TEMPERATURE
-    _attr_state_class = SensorStateClass.MEASUREMENT
-
-    def __init__(self, coordinator, miner_config):
-        super().__init__(coordinator, miner_config)
-        self._attr_unique_id = f"{self.coordinator.miner_ip}_temperature"
-        self._attr_name = f"{self.coordinator.miner_name} Temperatur"
+        if not self.coordinator.data: return None
+        fan_data = self.coordinator.data.get("fan_sensors", {}).get(self._fan_num)
+        return fan_data.get(self._sensor) if fan_data else None
 
     @property
-    def native_value(self):
-        val = _safe_get(self.coordinator.data, ["temperature", "env_temp", "temperature_avg"])
-        return round(val, 1) if val is not None else None
-
-class MinerPowerSensor(MinerBaseEntity, SensorEntity):
-    """Sensor for Miner Power Consumption."""
-    _attr_native_unit_of_measurement = "W"
-    _attr_device_class = SensorDeviceClass.POWER
-    _attr_state_class = SensorStateClass.MEASUREMENT
-
-    def __init__(self, coordinator, miner_config):
-        super().__init__(coordinator, miner_config)
-        self._attr_unique_id = f"{self.coordinator.miner_ip}_power"
-        self._attr_name = f"{self.coordinator.miner_name} Verbrauch"
-
-    @property
-    def native_value(self):
-        return _safe_get(self.coordinator.data, ["wattage", "power"])
-
-class MinerEfficiencySensor(MinerBaseEntity, SensorEntity):
-    """Sensor for Miner Efficiency."""
-    _attr_native_unit_of_measurement = "W/TH"
-    _attr_state_class = SensorStateClass.MEASUREMENT
-
-    def __init__(self, coordinator, miner_config):
-        super().__init__(coordinator, miner_config)
-        self._attr_unique_id = f"{self.coordinator.miner_ip}_efficiency"
-        self._attr_name = f"{self.coordinator.miner_name} Effizienz"
-
-    @property
-    def native_value(self):
-        val = _safe_get(self.coordinator.data, ["efficiency"])
-        return round(val, 2) if val is not None else None
-
-class MinerFanSensor(MinerBaseEntity, SensorEntity):
-    """Sensor for Miner Fans."""
-    _attr_native_unit_of_measurement = "RPM"
-    _attr_state_class = SensorStateClass.MEASUREMENT
-
-    def __init__(self, coordinator, miner_config, fan_idx):
-        super().__init__(coordinator, miner_config)
-        self.fan_idx = fan_idx
-        self._attr_unique_id = f"{self.coordinator.miner_ip}_fan_{fan_idx}"
-        self._attr_name = f"{self.coordinator.miner_name} Lüfter {fan_idx + 1}"
-
-    @property
-    def native_value(self):
-        data = self.coordinator.data
-        if not data:
-            return None
-            
-        # Check for list of fans in dataclass / dict
-        fans_list = None
-        if isinstance(data, dict) and "fans" in data:
-            fans_list = data["fans"]
-        elif hasattr(data, "fans"):
-            fans_list = getattr(data, "fans")
-            
-        if fans_list is not None and isinstance(fans_list, list) and len(fans_list) > self.fan_idx:
-            val = fans_list[self.fan_idx]
-            if val is not None:
-                # Handle pyasic Fan objects
-                if hasattr(val, "speed"):
-                    val = val.speed
-                elif hasattr(val, "rpm"):
-                    val = val.rpm
-                
-                try:
-                    v_int = int(val)
-                    if v_int > 0:
-                        return v_int
-                except (ValueError, TypeError):
-                    pass
-                
-        # Fallback to direct keys
-
-        val = _safe_get(data, [f"fan_{self.fan_idx}", f"fan_{self.fan_idx + 1}"])
-        return val if val != -1 else None
+    def device_info(self):
+        return get_device_info(DOMAIN, self.coordinator)

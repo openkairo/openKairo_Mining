@@ -65,7 +65,7 @@ Maximale Sicherheit für deine Hardware:
 ## ☕ Projekt unterstützen
 OpenKairo ist ein leidenschaftliches Community-Projekt. Wenn dir das Dashboard gefällt, freuen wir uns über deine Unterstützung!
 
-- **PayPal**: [info@low-streaming.de](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=info@low-streaming.de&currency_code=EUR&source=url)
+- **PayPal**: [info@openkairo.de](https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=info@openkairo.de&currency_code=EUR&source=url)
 - **Bitcoin**: `37KAus3ABc6krJ5T4jZyLKVB3uzbfQZGWD`
 
 ---
