@@ -50,6 +50,7 @@ MINER_SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
     ),
     "power_limit": SensorEntityDescription(
         key="power_limit",
+        name="Leistung (Limit)",
         translation_key="power_limit",
         native_unit_of_measurement=UnitOfPower.WATT,
         state_class=SensorStateClass.MEASUREMENT,
@@ -58,6 +59,7 @@ MINER_SENSOR_DESCRIPTIONS: dict[str, SensorEntityDescription] = {
     ),
     "miner_consumption": SensorEntityDescription(
         key="miner_consumption",
+        name="Leistung (Aktuell)",
         translation_key="miner_consumption",
         native_unit_of_measurement=UnitOfPower.WATT,
         state_class=SensorStateClass.MEASUREMENT,
@@ -151,6 +153,13 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     for i in range(num_fans):
         sensors.append(MinerFanSensor(coordinator, i, "fan_speed", FAN_SENSOR_DESCRIPTIONS["fan_speed"]))
 
+    # Dynamic Raw Sensors (Hass-Miner parity)
+    if coordinator.data and coordinator.data.get("raw_data"):
+        for key in coordinator.data["raw_data"]:
+            # We skip creating generic sensors for complex nested objects
+            if not isinstance(coordinator.data["raw_data"][key], (list, dict)):
+                sensors.append(MinerDynamicSensor(coordinator, key))
+
     async_add_entities(sensors)
 
 
@@ -215,3 +224,79 @@ class MinerFanSensor(CoordinatorEntity, SensorEntity):
     @property
     def device_info(self):
         return get_device_info(DOMAIN, self.coordinator)
+
+class MinerDynamicSensor(CoordinatorEntity, SensorEntity):
+    def __init__(self, coordinator, key):
+        from homeassistant.const import UnitOfTemperature, UnitOfPower, UnitOfElectricPotential, REVOLUTIONS_PER_MINUTE
+        from homeassistant.components.sensor import SensorDeviceClass, SensorStateClass
+        super().__init__(coordinator)
+        self._key = key
+        self._attr_has_entity_name = True
+        ip_slug = coordinator.miner_ip.replace(".", "_")
+        self._attr_unique_id = f"{DOMAIN}_{ip_slug}_raw_{key}"
+        
+        # Make the name pretty-ish
+        pretty_name = key.replace("_", " ").title()
+        self._attr_name = pretty_name
+        
+        # Best effort unit assignment
+        k = key.lower()
+        if "temp" in k:
+            self._attr_native_unit_of_measurement = UnitOfTemperature.CELSIUS
+            self._attr_device_class = SensorDeviceClass.TEMPERATURE
+        elif "watt" in k or "power" in k:
+            self._attr_native_unit_of_measurement = UnitOfPower.WATT
+            self._attr_device_class = SensorDeviceClass.POWER
+        elif "voltage" in k or "volt" in k:
+            self._attr_native_unit_of_measurement = UnitOfElectricPotential.VOLT
+        elif "speed" in k or "rpm" in k:
+            self._attr_native_unit_of_measurement = REVOLUTIONS_PER_MINUTE
+        elif "hashrate" in k and "ideal" not in k:
+            self._attr_native_unit_of_measurement = "TH/s"
+        elif "efficiency" in k or "efficiency" in k:
+            self._attr_native_unit_of_measurement = "J/TH"
+            
+        self._attr_state_class = SensorStateClass.MEASUREMENT if hasattr(self, "_attr_native_unit_of_measurement") and self._attr_native_unit_of_measurement else None
+
+    @property
+    def device_info(self):
+        return get_device_info(DOMAIN, self.coordinator)
+
+    @property
+    def native_value(self):
+        if not self.coordinator.data: return None
+        raw = self.coordinator.data.get("raw_data", {})
+        val = raw.get(self._key)
+        
+        if val is None: return None
+        
+        # 1. Unpack pyasic objects (e.g., HashRate has .rate or similar, Enums have .name)
+        if hasattr(val, "rate"):
+            try: val = float(val.rate)
+            except: pass
+        elif hasattr(val, "name") and hasattr(val, "value"):
+            val = str(val.name)
+            
+        # Formatting hashrates natively
+        if isinstance(val, (int, float)):
+            val = float(val) # Strip pyasic.HashRate string overrides
+            if "hashrate" in self._key.lower():
+                if val > 1000000000: return round(val / 1e12, 2)
+                if val > 5000: return round(val / 1000, 2)
+                return round(val, 2)
+            return round(val, 2)
+            
+        # String fallback for unparsed custom python objects
+        if not isinstance(val, (str, int, float, bool)):
+            s = str(val)
+            # If pyasic returned a pyasic.Device object, just return a string format
+            if s.startswith("<") and ">" in s:
+                return "Objekt"
+            if len(s) > 250: return s[:247] + "..."
+            return s
+            
+        return val
+
+    @property
+    def available(self) -> bool:
+        return self.coordinator.available and "raw_data" in self.coordinator.data

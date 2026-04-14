@@ -7,7 +7,10 @@
     "codeowners": [
         "@openkairo"
     ],
-    "requirements": [],
+    "requirements": [
+        "betterproto==2.0.0b7",
+        "pyasic>=0.23.0"
+    ],
     "platforms": [
         "sensor",
         "switch",
