@@ -42,7 +42,7 @@ Maximale Sicherheit für deine Hardware:
 
 ### 1. Installation via HACS
 1. In Home Assistant: **HACS** > **Integrationen** > drei Punkte > **Benutzerdefinierte Repositories**.
-2. URL: `https://github.com/low-streaming/openkairo_minig` (bzw. das korrekte Repo) > Kategorie: **Integration** hinzufügen.
+2. URL: `https://github.com/openkairo/openKairo_Mining` (bzw. das korrekte Repo) > Kategorie: **Integration** hinzufügen.
 3. Herunterladen und Home Assistant **neu starten**.
 
 ### 2. Dashboard & Miner einrichten
