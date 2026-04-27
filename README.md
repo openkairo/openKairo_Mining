@@ -1,4 +1,4 @@
-# OpenKairo Mining 🚀 — Das Ultimative "Command Center" v1.3.8
+# OpenKairo Mining 🚀 — Das Ultimative "Command Center" v1.3.21
 
 [![OpenKairo](https://img.shields.io/badge/Powered%20by-OpenKairo-0bc4e2.svg?style=for-the-badge)](https://openkairo.de)
 [![Home Assistant](https://img.shields.io/badge/Home%20Assistant-Integration-41bdf5.svg?style=for-the-badge)](https://home-assistant.io)
@@ -8,7 +8,7 @@ Verwandle deinen Home Assistant in eine professionelle **Mining-Schaltzentrale**
 
 ---
 
-## 💎 Highlights der v1.3.8 - "The Intelligence Update"
+## 💎 Highlights der v1.3.21 - "The Intelligence Update"
 
 Dieses Update bringt smarte Logik und maximale Kontrolle in dein Setup.
 
@@ -22,6 +22,7 @@ Nutze deinen Miner als intelligente Heizung. Schalte deine Hardware basierend au
 Das gesamte Dashboard wurde für die mobile Nutzung überarbeitet. 
 - **Flüssiger Ticker**: Bitcoin-Fees und Markt-Daten immer im Blick.
 - **Kompakte Karten**: Alle wichtigen Stats auf einem Screen.
+- **Globaler Forecast**: Die Wetterprognose kann jetzt in jedem Modus konfiguriert und angezeigt werden.
 - **Beta-Labels**: Volle Transparenz über den Status neuer Features.
 
 ### ⚡ Native Hardware-Anbindung (pyasic)

@@ -1,7 +1,5 @@
 {
-  "name": "OpenKairo Mining",
-  "content_in_root": false,
-  "render_readme": true,
-  "iot_class": "local_polling",
-  "homeassistant": "2023.0.0"
+    "name": "OpenKairo Mining",
+    "render_readme": true,
+    "iot_class": "local_polling"
 }
