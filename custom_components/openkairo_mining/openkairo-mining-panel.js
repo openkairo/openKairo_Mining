@@ -317,6 +317,15 @@ class OpenKairoMiningPanel extends LitElement {
     this.historyData = {};
     this.mempool = { fees: null, height: null, halving: null };
 
+    // Debug helper for black screens (early catch)
+    window.addEventListener('unhandledrejection', (event) => {
+      if (event.reason && (event.reason.name === 'AbortError' || event.reason.message?.includes('Transition'))) {
+        event.preventDefault();
+        return;
+      }
+      console.error('CRITICAL: Unhandled Promise Rejection:', event.reason);
+    });
+
     this.fetchingHistory = {};
     this.simulatorModels = {};
     this.switchHistoryData = {};
@@ -343,12 +352,15 @@ class OpenKairoMiningPanel extends LitElement {
   }
 
   firstUpdated() {
-    this.loadConfig();
-    this.fetchBtcDifficulty();
-    this.fetchBtcPrice();
-    this.fetchMarketData();
-    this.fetchBtcPriceHistory();
-    this.fetchKaspaData();
+    this.loadConfig().catch(e => console.error("loadConfig fail:", e));
+    this.fetchBtcDifficulty().catch(e => console.error("fetchBtcDiff fail:", e));
+    this.fetchBtcPrice().catch(e => console.error("fetchBtcPrice fail:", e));
+    this.fetchMarketData().catch(e => console.error("fetchMarket fail:", e));
+    this.fetchBtcPriceHistory().catch(e => console.error("fetchBtcHist fail:", e));
+    this.fetchKaspaData().catch(e => console.error("fetchKaspa fail:", e));
+
+    // Error listener moved to constructor for earlier catching
+    console.log("OpenKairoMiningPanel: firstUpdated called");
     
     // Refresh miner states/config every 15 seconds (matching backend loop)
     this.intervals.push(setInterval(() => {
@@ -593,14 +605,14 @@ class OpenKairoMiningPanel extends LitElement {
       const response = await this.hass.callApi('GET', `history/period/${startStr}?filter_entity_id=${entityId}&minimal_response`);
       if (response && response.length > 0) {
         this.historyData = { ...this.historyData, [entityId]: response[0] };
-        this.requestUpdate();
       } else {
         this.historyData = { ...this.historyData, [entityId]: [] };
-        this.requestUpdate();
       }
     } catch (e) {
       console.error("Failed to fetch history for " + entityId, e);
       this.historyData = { ...this.historyData, [entityId]: [] };
+    } finally {
+      this.fetchingHistory[entityId] = false;
       this.requestUpdate();
     }
   }
@@ -1081,7 +1093,7 @@ class OpenKairoMiningPanel extends LitElement {
 
 
   _hexToRgb(hex) {
-    if (!hex) return "11, 196, 226";
+    if (!hex || typeof hex !== 'string' || !hex.startsWith('#')) return "11, 196, 226";
     const r = parseInt(hex.slice(1, 3), 16);
     const g = parseInt(hex.slice(3, 5), 16);
     const b = parseInt(hex.slice(5, 7), 16);
@@ -1235,34 +1247,63 @@ class OpenKairoMiningPanel extends LitElement {
     root.style.setProperty('--theme-glow-op', layout.glow);
 
     // Set host attribute for CSS targeting
-    this.setAttribute('theme', theme);
-    return html``;
+    // MOVED TO updated() to prevent infinite loops during render
   }
 
 
+  updated(changedProperties) {
+    // Only update theme styles if config actually changed.
+    // hass changes too frequently (on every state change in HA) to run this every time.
+    if (changedProperties.has('config')) {
+      this._applyThemeStyles();
+      const theme = this.config?.theme || 'cyberpunk';
+      if (this.getAttribute('theme') !== theme) {
+        this.setAttribute('theme', theme);
+      }
+    }
+  }
+
   render() {
+    // DIAGNOSTIC RENDER
+    // Diagnostic logging removed to improve performance during frequent state updates
+    
     try {
-      if (!this.config) return html`<div class="loading">Warte auf Konfiguration...</div>`;
+      if (!this.config || (this.config.miners && this.config.miners.length === 0 && !this.hass)) {
+        return html`
+          <div style="height: 100vh; width: 100vw; display: flex; flex-direction: column; align-items: center; justify-content: center; background: #000; color: #fff; position: fixed; top: 0; left: 0; z-index: 9999;">
+             <div style="color: #0bc4e2; font-size: 2em; font-weight: bold; margin-bottom: 20px;">OpenKairo Mining</div>
+             <ha-circular-progress active></ha-circular-progress>
+             <div style="margin-top: 25px; font-size: 1.1em;">Initialisiere Dashboard...</div>
+             <div style="margin-top: 10px; font-size: 0.8em; color: #555;">Warte auf Daten von Home Assistant</div>
+          </div>
+        `;
+      }
       
       const theme = this.config.theme || 'cyberpunk';
       const walletSensor = this.config.wallet_btc_sensor;
-      const walletState = (this.hass && walletSensor && this.hass.states[walletSensor]) ? this.hass.states[walletSensor].state : '0.0000';
+      const walletState = (this.hass && this.hass.states && walletSensor && this.hass.states[walletSensor]) ? this.hass.states[walletSensor].state : '0.0000';
       const profileImg = this.config.profile_image || 'https://openkairo.de/wp-content/uploads/2024/01/openkairo-logo-icon.png';
 
-      // Apply variables to host
-      this._applyThemeStyles();
+      // Side-effects moved to updated() lifecycle method
+      // this._applyThemeStyles();
 
       return html`
         ${this.config.background_animations_enabled !== false ? html`<div class="theme-bg-overlay"></div>` : ''}
         <div class="dashboard-container">
+          <!-- Debug Info (hidden by default) -->
+          <div style="display: none;">Render: ${this.activeTab} | Miners: ${this.config.miners?.length}</div>
+
           <!-- [NEW] Sponsoring Edition Header -->
-          <div class="sponsoring-header" style="display: grid; grid-template-columns: 1.2fr 1fr 1.2fr; gap: 20px; padding: 25px 35px; background: linear-gradient(135deg, rgba(0,25,50,0.8) 0%, rgba(0,10,20,0.9) 100%); border: 1px solid rgba(255,255,255,0.05); border-radius: 20px; margin-bottom: 10px; position: relative; overflow: hidden; backdrop-filter: blur(20px);">
+          <div class="sponsoring-header" style="display: grid; grid-template-columns: 1.2fr 1fr 1.2fr; gap: 20px; padding: 25px 35px; background: linear-gradient(135deg, rgba(0,25,50,0.8) 0%, rgba(0,10,20,0.9) 100%); border: 1px solid rgba(255,255,255,0.05); border-radius: 20px; margin-bottom: 10px; position: relative; overflow: hidden;">
             
             <!-- Left: Portfolio -->
             <div class="header-left" style="display: flex; align-items: center; gap: 25px;">
               <div class="portfolio-avatar" style="position: relative; width: 85px; height: 85px;">
-                <div style="width: 100%; height: 100%; border-radius: 50%; background: #000; border: 3px solid var(--theme-accent-1); box-shadow: 0 0 30px rgba(var(--theme-accent-1-rgb), 0.4); overflow: hidden;">
-                  <img src="${profileImg}" style="width: 100%; height: 100%; object-fit: cover;">
+                <div style="width: 100%; height: 100%; border-radius: 50%; background: #000; border: 3px solid var(--theme-accent-1); box-shadow: 0 0 30px rgba(var(--theme-accent-1-rgb), 0.4); overflow: hidden; display: flex; align-items: center; justify-content: center;">
+                  <img src="${profileImg}" 
+                       @error="${(e) => { e.target.style.display = 'none'; e.target.nextElementSibling.style.display = 'block'; }}"
+                       style="width: 100%; height: 100%; object-fit: cover;">
+                  <ha-icon icon="mdi:account" style="display: none; --mdc-icon-size: 40px; color: var(--theme-accent-1);"></ha-icon>
                 </div>
                 <div style="position: absolute; bottom: 5px; right: 5px; width: 18px; height: 18px; background: #00ff00; border: 3px solid #000; border-radius: 50%; box-shadow: 0 0 10px #00ff00;"></div>
               </div>
@@ -1343,6 +1384,18 @@ class OpenKairoMiningPanel extends LitElement {
 
           ${this._renderTicker()}
           ${this.renderActivityTicker()}
+          <button class="mobile-back-btn" @click="${() => {
+            if (this.activeTab !== 'dashboard') {
+              this.activeTab = 'dashboard';
+              this.editingMinerId = null;
+              window.scrollTo(0, 0);
+            } else {
+              window.history.back();
+            }
+          }}">
+            <ha-icon icon="mdi:arrow-left" style="--mdc-icon-size: 18px;"></ha-icon>
+            ${this.activeTab !== 'dashboard' ? 'Dashboard' : 'HA Menü'}
+          </button>
 
           <div class="content">
         ${(() => {
@@ -1657,6 +1710,15 @@ class OpenKairoMiningPanel extends LitElement {
   }
 
   renderDashboard() {
+    if (!this.hass) {
+      return html`
+        <div class="card" style="text-align: center; padding: 40px;">
+          <ha-circular-progress active></ha-circular-progress>
+          <p style="margin-top: 15px; color: #888;">Verbinde mit Home Assistant...</p>
+        </div>
+      `;
+    }
+
     if (!this.config.miners || this.config.miners.length === 0) {
       return html`
         <div class="card empty-state">
@@ -1686,77 +1748,80 @@ class OpenKairoMiningPanel extends LitElement {
     let totalMinersOnline = 0;
 
     this.config.miners.forEach(miner => {
-        const domain = 'openkairo_mining';
-        const _ipForSlug = miner.miner_ip || (miner.switch && miner.switch.includes('.') ? miner.switch : '');
-        const _ipSlug = _ipForSlug ? _ipForSlug.replace(/\./g, '_') : '';
+        try {
+            const domain = 'openkairo_mining';
+            const _ipForSlug = miner.miner_ip || (miner.switch && miner.switch.includes('.') ? miner.switch : '');
+            const _ipSlug = _ipForSlug ? _ipForSlug.replace(/\./g, '_') : '';
 
-        // Switch State
-        let effectiveSwitch = miner.switch;
-        if (!effectiveSwitch && _ipSlug) {
-            effectiveSwitch = `switch.${domain}_${_ipSlug}_switch`;
-        }
-        let switchState = 'off';
-        if (this.hass && effectiveSwitch && this.hass.states[effectiveSwitch]) {
-          switchState = this.hass.states[effectiveSwitch].state;
-        }
-        if (switchState === 'on') activeMiners++;
+            // Switch State
+            let effectiveSwitch = miner.switch;
+            if (!effectiveSwitch && _ipSlug) {
+                effectiveSwitch = `switch.${domain}_${_ipSlug}_switch`;
+            }
+            let switchState = 'off';
+            if (this.hass?.states[effectiveSwitch]) {
+              switchState = this.hass.states[effectiveSwitch].state;
+            }
+            if (switchState === 'on') activeMiners++;
 
-        // Power
-        let pSensor = miner.power_consumption_sensor || (_ipSlug ? `sensor.${domain}_${_ipSlug}_power` : '');
-        if (this.hass && pSensor && this.hass.states[pSensor]) {
-           const watts = parseFloat(this.hass.states[pSensor].state) || 0;
-           if (watts > 0 && switchState === 'on') totalPowerW += watts;
-        }
+            // Power
+            let pSensor = miner.power_consumption_sensor || (_ipSlug ? `sensor.${domain}_${_ipSlug}_power` : '');
+            if (this.hass?.states[pSensor]) {
+               const watts = parseFloat(this.hass.states[pSensor].state) || 0;
+               if (watts > 0 && switchState === 'on') totalPowerW += watts;
+            }
 
-        // Hashrate
-        let hSensor = miner.hashrate_sensor || (_ipSlug ? `sensor.${domain}_${_ipSlug}_hashrate` : '');
-        let hrInTH = 0;
-        if (this.hass && hSensor && this.hass.states[hSensor]) {
-            const hrState = this.hass.states[hSensor];
-            const hrValue = parseFloat(hrState.state) || 0;
-            const unit = (hrState.attributes?.unit_of_measurement || 'TH/S').toUpperCase();
+            // Hashrate
+            let hSensor = miner.hashrate_sensor || (_ipSlug ? `sensor.${domain}_${_ipSlug}_hashrate` : '');
+            let hrInTH = 0;
+            if (this.hass?.states[hSensor]) {
+                const hrState = this.hass.states[hSensor];
+                const hrValue = parseFloat(hrState.state) || 0;
+                const unit = (hrState.attributes?.unit_of_measurement || 'TH/S').toUpperCase();
+                
+                if (unit.includes('PH')) hrInTH = hrValue * 1000;
+                else if (unit.includes('TH')) hrInTH = hrValue;
+                else if (unit.includes('GH')) hrInTH = hrValue / 1000;
+                else if (unit.includes('MH')) hrInTH = hrValue / 1000000;
+                else if (unit.includes('KH')) hrInTH = hrValue / 1000000000;
+                else hrInTH = hrValue / 1000000000000; // Raw H/s
+                
+                if (hrInTH > 0 && switchState === 'on') {
+                    totalHashrateTH += hrInTH;
+                    totalMinersOnline++;
+                }
+            }
+
+            // Multi-Coin Earnings (BTC or KAS)
+            const currentDifficulty = this.btcDifficulty || 82000000000000;
+            const miningCoin = miner.mining_coin || 'BTC';
             
-            if (unit.includes('PH')) hrInTH = hrValue * 1000;
-            else if (unit.includes('TH')) hrInTH = hrValue;
-            else if (unit.includes('GH')) hrInTH = hrValue / 1000;
-            else if (unit.includes('MH')) hrInTH = hrValue / 1000000;
-            else if (unit.includes('KH')) hrInTH = hrValue / 1000000000;
-            else hrInTH = hrValue / 1000000000000; // Raw H/s
-            
-            if (hrInTH > 0 && switchState === 'on') {
-                totalHashrateTH += hrInTH;
-                totalMinersOnline++;
+            if (miningCoin === 'BTC') {
+                let btcPerDay = 0;
+                if (miner.calc_method === 'btc_auto' && hrInTH > 0 && switchState === 'on') {
+                    btcPerDay = (hrInTH * 1e12 / (currentDifficulty * Math.pow(2, 32))) * 86400 * 3.125;
+                } else if (miner.crypto_revenue_sensor && this.hass?.states[miner.crypto_revenue_sensor] && switchState === 'on') {
+                    btcPerDay = parseFloat(this.hass.states[miner.crypto_revenue_sensor].state) || 0;
+                } else if (hrInTH > 0 && switchState === 'on') {
+                    btcPerDay = (hrInTH * 1e12 / (currentDifficulty * Math.pow(2, 32))) * 86400 * 3.125;
+                }
+                if (!miner.is_solo) {
+                    totalDailyRevBTC += btcPerDay;
+                }
+            } else if (miningCoin === 'KAS') {
+                let kasPerDay = 0;
+                const netHR_TH = parseFloat(this.kasNetworkHashrate || 0); // Already normalized to TH/s
+                if (hrInTH > 0 && switchState === 'on' && netHR_TH > 0) {
+                    kasPerDay = (hrInTH / netHR_TH) * 86400 * (parseFloat(this.kasReward) || 0);
+                } else if (miner.crypto_revenue_sensor && this.hass?.states[miner.crypto_revenue_sensor] && switchState === 'on') {
+                    kasPerDay = parseFloat(this.hass.states[miner.crypto_revenue_sensor].state) || 0;
+                }
+                if (!miner.is_solo) {
+                    totalDailyRevKAS += kasPerDay;
+                }
             }
-        }
-
-        // Multi-Coin Earnings (BTC or KAS)
-        const currentDifficulty = this.btcDifficulty || 82000000000000;
-        const miningCoin = miner.mining_coin || 'BTC';
-        
-        if (miningCoin === 'BTC') {
-            let btcPerDay = 0;
-            if (miner.calc_method === 'btc_auto' && hrInTH > 0 && switchState === 'on') {
-                btcPerDay = (hrInTH * 1e12 / (currentDifficulty * Math.pow(2, 32))) * 86400 * 3.125;
-            } else if (miner.crypto_revenue_sensor && this.hass && this.hass.states[miner.crypto_revenue_sensor] && switchState === 'on') {
-                btcPerDay = parseFloat(this.hass.states[miner.crypto_revenue_sensor].state) || 0;
-            } else if (hrInTH > 0 && switchState === 'on') {
-                btcPerDay = (hrInTH * 1e12 / (currentDifficulty * Math.pow(2, 32))) * 86400 * 3.125;
-            }
-            if (!miner.is_solo) {
-                totalDailyRevBTC += btcPerDay;
-            }
-        } else if (miningCoin === 'KAS') {
-            let kasPerDay = 0;
-            const netHR_TH = parseFloat(this.kasNetworkHashrate || 0); // Already normalized to TH/s
-            if (hrInTH > 0 && switchState === 'on' && netHR_TH > 0) {
-                // Formula: (Miner_TH / Network_TH) * Blocks_in_Day * Reward
-                kasPerDay = (hrInTH / netHR_TH) * 86400 * (parseFloat(this.kasReward) || 0);
-            } else if (miner.crypto_revenue_sensor && this.hass && this.hass.states[miner.crypto_revenue_sensor] && switchState === 'on') {
-                kasPerDay = parseFloat(this.hass.states[miner.crypto_revenue_sensor].state) || 0;
-            }
-            if (!miner.is_solo) {
-                totalDailyRevKAS += kasPerDay;
-            }
+        } catch (e) {
+            console.error("Aggregation Error for Miner:", miner.id, e);
         }
     });
 
@@ -1827,10 +1892,10 @@ class OpenKairoMiningPanel extends LitElement {
 
         ${totalPowerW > 0 ? html`
           <div class="energy-flow-container" style="height: 40px; margin-top: 10px; display: flex; justify-content: center; overflow: hidden;">
-             <svg width="100%" height="40" preserveAspectRatio="none">
-               <path class="energy-flow-line" d="M 0 20 Q ${this.offsetWidth/4 || 200} 0, ${this.offsetWidth/2 || 400} 20 T ${this.offsetWidth || 800} 20" 
+             <svg width="100%" height="40" preserveAspectRatio="none" viewBox="0 0 1000 40">
+               <path class="energy-flow-line" d="M 0 20 Q 250 0, 500 20 T 1000 20" 
                      fill="none" stroke="var(--theme-accent-1)" stroke-width="2" opacity="0.3" />
-               <path class="energy-flow-line" d="M 0 20 Q ${this.offsetWidth/4 || 200} 40, ${this.offsetWidth/2 || 400} 20 T ${this.offsetWidth || 800} 20" 
+               <path class="energy-flow-line" d="M 0 20 Q 250 40, 500 20 T 1000 20" 
                      fill="none" stroke="var(--theme-accent-4)" stroke-width="1.5" opacity="0.2" style="animation-delay: -1s;" />
              </svg>
           </div>
@@ -1849,8 +1914,8 @@ class OpenKairoMiningPanel extends LitElement {
                 // Try multiple patterns
                 const p1 = `switch.${domain}_${_ipSlug}_switch`;
                 const p2 = `switch.${domain}_${_ipSlug}_mining_aktiv`;
-                if (this.hass.states[p1]) effectiveSwitch = p1;
-                else if (this.hass.states[p2]) effectiveSwitch = p2;
+                if (this.hass?.states[p1]) effectiveSwitch = p1;
+                else if (this.hass?.states[p2]) effectiveSwitch = p2;
                 else effectiveSwitch = p1; // Fallback
             }
 
@@ -2002,7 +2067,7 @@ class OpenKairoMiningPanel extends LitElement {
             const cardStateClass = stateObj?.ramping ? 'is-ramping' : (isActuallyMining ? 'is-on' : isStandby ? 'is-standby' : '');
 
             return html`
-              <div class="card miner-card ${cardStateClass}" style="position: relative; background: rgba(0,0,0,0.75) !important; backdrop-filter: blur(20px);">
+              <div class="card miner-card ${cardStateClass}" style="position: relative; background: rgba(0,0,0,0.75) !important; /* Removed backdrop-filter to prevent black screen issues */">
                 ${this.config.theme === 'gladbeck' ? html`
                   <img src="https://solarmodule-gladbeck.de/wp-content/uploads/2023/07/cropped-logo_new.png" style="position: absolute; top: 10px; right: 10px; height: 18px; opacity: 0.1; filter: grayscale(1) brightness(2); pointer-events: none; z-index: 0;">
                 ` : ''}
@@ -2062,7 +2127,7 @@ class OpenKairoMiningPanel extends LitElement {
                     </div>
                   ` : ''}
 
-                <div class="api-stats" style="background: rgba(15,15,20,0.9); border: 1px solid rgba(255,255,255,0.15); border-radius: 12px; padding: 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; backdrop-filter: blur(10px);">
+                <div class="api-stats" style="background: rgba(15,15,20,0.9); border: 1px solid rgba(255,255,255,0.15); border-radius: 12px; padding: 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; /* Removed backdrop-filter */">
                   <div class="stat" style="text-align: center;">
                     <div style="font-size: 0.55em; color: rgba(255,255,255,0.4); text-transform: uppercase; font-weight: 900; letter-spacing: 1.5px; margin-bottom: 5px;">Hashrate:</div>
                     <div style="font-size: 1.1em; font-weight: 950; color: #0bc4e2; font-family: 'Space Mono', monospace;">${hashrateValue}</div>
@@ -2302,19 +2367,24 @@ class OpenKairoMiningPanel extends LitElement {
                               <div style="position: absolute; top: 0; left: 0; height: 100%; width: ${watchdogProgress}%; background: rgba(231, 76, 60, 0.1); z-index: 0; transition: width 15s linear;"></div>
                           ` : ''}
                           <div style="position: relative; z-index: 1;">
-                            <div style="position: absolute; right: 15px; top: 15px;">
-                               <div class="badge" style="background: rgba(var(--theme-accent-1-rgb), 0.2); color: #fff; border: 1px solid rgba(var(--theme-accent-1-rgb), 0.5); border-radius: 6px; padding: 6px 14px; font-weight: 900; display: flex; align-items: center; gap: 8px; font-size: 0.8em; cursor: pointer; text-transform: uppercase; box-shadow: 0 0 15px rgba(var(--theme-accent-1-rgb), 0.3);" @click="${() => this.toggleMiner(miner.standby_switch)}">
-                                  <span>🔌</span> Plug
-                               </div>
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; flex-wrap: wrap; gap: 10px;">
+                                <label style="margin: 0; display: flex; align-items: center; gap: 10px; cursor: pointer;">
+                                    <input type="checkbox" .checked="${miner.standby_watchdog_enabled}" @change="${(e) => this.quickUpdateMiner(miner.id, 'standby_watchdog_enabled', e.target.checked)}" style="width: 18px; height: 18px; margin: 0; accent-color: #e74c3c;">
+                                    <b style="font-size: 1.1em;">🛡️ Watchdog:</b> <span class="highlight-val" style="color: ${stState === 'on' ? '#d62cf6' : '#e74c3c'}; text-transform: uppercase; font-weight: 900; font-size: 1.1em; margin-left: 5px;">${stState === 'on' ? 'ON' : 'OFF'}</span>
+                                </label>
+                                <div class="badge" style="background: rgba(var(--theme-accent-1-rgb), 0.2); color: #fff; border: 1px solid rgba(var(--theme-accent-1-rgb), 0.5); border-radius: 6px; padding: 6px 14px; font-weight: 900; display: flex; align-items: center; gap: 8px; font-size: 0.8em; cursor: pointer; text-transform: uppercase; box-shadow: 0 0 15px rgba(var(--theme-accent-1-rgb), 0.3);" @click="${() => this.toggleMiner(miner.standby_switch)}">
+                                   <span>🔌</span> Plug
+                                </div>
                             </div>
-                            <label style="margin: 0; display: flex; align-items: center; gap: 10px; cursor: pointer;">
-                                <input type="checkbox" .checked="${miner.standby_watchdog_enabled}" @change="${(e) => this.quickUpdateMiner(miner.id, 'standby_watchdog_enabled', e.target.checked)}" style="width: 18px; height: 18px; margin: 0; accent-color: #e74c3c;">
-                                <b style="font-size: 1.1em;">🛡️ Watchdog:</b> <span class="highlight-val" style="color: ${stState === 'on' ? '#d62cf6' : '#e74c3c'}; text-transform: uppercase; font-weight: 900; font-size: 1.1em; margin-left: 5px;">${stState === 'on' ? 'ON' : 'OFF'}</span>
-                            </label>
-                            <div class="small-text mt-1" style="margin-top: 10px; display: flex; gap: 5px; align-items: center; flex-wrap: wrap;">
-                                Off wenn &lt; <input type="number" class="tech-input" .value="${miner.standby_power || 100}" @change="${(e) => this.quickUpdateMiner(miner.id, 'standby_power', e.target.value)}"> W 
-                                für &ge; <input type="number" class="tech-input" .value="${miner.standby_delay || 10}" @change="${(e) => this.quickUpdateMiner(miner.id, 'standby_delay', e.target.value)}"> Min.
+                            <div class="small-text mt-1 watchdog-controls" style="margin-top: 10px; display: flex; gap: 5px; align-items: center; flex-wrap: wrap;">
+                                <span>Off wenn &lt; <input type="number" class="tech-input" .value="${miner.standby_power || 100}" @change="${(e) => this.quickUpdateMiner(miner.id, 'standby_power', e.target.value)}"> W</span>
+                                <span>für &ge; <input type="number" class="tech-input" .value="${miner.standby_delay || 10}" @change="${(e) => this.quickUpdateMiner(miner.id, 'standby_delay', e.target.value)}"> Min.</span>
                             </div>
+                            ${watchdogWarning ? html`
+                                <div style="margin-top: 10px; color: #e74c3c; font-weight: 800; font-size: 0.9em; display: flex; align-items: center; gap: 5px; animation: pulse 2s infinite;">
+                                    ${watchdogWarning}
+                                </div>
+                            ` : ''}
                           </div>
                         </div>`;
                     })()}
@@ -2348,11 +2418,11 @@ class OpenKairoMiningPanel extends LitElement {
 
                   <!-- Stats Row -->
                   <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-top: 15px;">
-                    <div style="flex: 1; min-width: 80px; background: rgba(15,15,20,0.9); padding: 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.15); backdrop-filter: blur(10px); box-shadow: 0 4px 20px rgba(0,0,0,0.4);">
+                    <div style="flex: 1; min-width: 80px; background: rgba(15,15,20,0.9); padding: 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.15); /* Removed backdrop-filter */ box-shadow: 0 4px 20px rgba(0,0,0,0.4);">
                       <div style="font-size: 0.7em; color: var(--theme-text-dim); text-transform: uppercase; letter-spacing: 1px; font-weight: 800; opacity: 0.8; margin-bottom: 4px;">Verbrauch</div>
                       <div style="font-size: 1.3em; font-weight: 950; color: #fff; text-shadow: 0 2px 4px rgba(0,0,0,0.5);">${powerConsumptionValue}</div>
                     </div>
-                    <div style="flex: 1; min-width: 80px; background: rgba(15,15,20,0.9); padding: 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.15); backdrop-filter: blur(10px); box-shadow: 0 4px 20px rgba(0,0,0,0.4);">
+                    <div style="flex: 1; min-width: 80px; background: rgba(15,15,20,0.9); padding: 12px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.15); /* Removed backdrop-filter */ box-shadow: 0 4px 20px rgba(0,0,0,0.4);">
                       <div style="font-size: 0.7em; color: var(--theme-text-dim); text-transform: uppercase; letter-spacing: 1px; font-weight: 800; opacity: 0.8; margin-bottom: 4px;">Tagesertrag</div>
                       <div style="font-size: 1.3em; font-weight: 950; color: #fff; text-shadow: 0 2px 4px rgba(0,0,0,0.5);">${dailyRevenue.toFixed(2)} <span style="font-size: 0.7em; opacity: 0.5;">€</span></div>
                     </div>
@@ -3164,13 +3234,13 @@ class OpenKairoMiningPanel extends LitElement {
   }
 
   renderActivityTicker() {
-    if (!this.logs || this.logs.length === 0) return '';
+    if (!this.logs || !Array.isArray(this.logs) || this.logs.length === 0) return '';
     // Duplicate logs for seamless looping on wide screens
     const tripledLogs = [...this.logs, ...this.logs, ...this.logs];
     return html`
       <div class="activity-ticker">
-        <div class="ticker-content">
-          ${tripledLogs.map(log => html`<div class="ticker-item">${log}</div>`)}
+        <div class="activity-ticker-content">
+          ${tripledLogs.map(log => html`<div class="activity-ticker-item">${log}</div>`)}
         </div>
       </div>
     `;
@@ -3659,7 +3729,6 @@ class OpenKairoMiningPanel extends LitElement {
       :host([theme="gladbeck"]) .card, 
       :host([theme="gladbeck"]) .miner-card,
       :host([theme="gladbeck"]) .tech-box {
-        backdrop-filter: blur(25px) saturate(180%);
         background: rgba(0, 31, 63, 0.4) !important;
         border: 1px solid rgba(0, 120, 187, 0.4);
         box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 0 30px rgba(0, 120, 187, 0.1);
@@ -3734,7 +3803,6 @@ class OpenKairoMiningPanel extends LitElement {
       /* --- ACTIVITY TICKER STYLES --- */
       .activity-ticker {
         background: rgba(0, 0, 0, 0.4);
-        backdrop-filter: blur(15px);
         border-bottom: 1px solid rgba(var(--theme-accent-1-rgb), 0.2);
         height: 38px;
         overflow: hidden;
@@ -3747,13 +3815,13 @@ class OpenKairoMiningPanel extends LitElement {
         border-radius: 8px;
       }
 
-      .ticker-content {
+      .activity-ticker-content {
         display: flex;
         white-space: nowrap;
-        animation: ticker-scroll 40s infinite linear;
+        animation: ticker-scroll 60s infinite linear;
       }
 
-      .ticker-item {
+      .activity-ticker-item {
         color: var(--theme-accent-1);
         font-family: 'Courier New', monospace;
         font-size: 0.85em;
@@ -3771,17 +3839,17 @@ class OpenKairoMiningPanel extends LitElement {
           background: rgba(0,0,0,0.2);
           border-bottom: 1px solid var(--theme-border-color);
         }
-        .ticker-content {
+        .activity-ticker-content {
           animation: none;
           justify-content: center;
           padding: 0 20px;
         }
-        .ticker-item {
+        .activity-ticker-item {
           margin-right: 40px;
           letter-spacing: 1px;
         }
         /* Hide duplicated logs on desktop to keep it static and clean */
-        .ticker-item:nth-child(n+21) {
+        .activity-ticker-item:nth-child(n+21) {
           display: none;
         }
       }
@@ -3801,7 +3869,6 @@ class OpenKairoMiningPanel extends LitElement {
         background: linear-gradient(135deg, rgba(var(--theme-accent-1-rgb), 0.05) 0%, rgba(var(--theme-accent-2-rgb), 0.02) 100%), var(--theme-bg-header, rgba(18, 18, 20, 0.6));
         border-radius: var(--theme-radius);
         border: 1px solid rgba(var(--theme-accent-1-rgb), 0.15);
-        backdrop-filter: blur(30px) saturate(150%);
         box-shadow: 0 20px 50px rgba(0,0,0,0.5), inset 0 1px 1px rgba(255,255,255,0.05);
         flex-wrap: wrap;
         position: relative;
@@ -3921,7 +3988,7 @@ class OpenKairoMiningPanel extends LitElement {
         overflow: hidden;
         position: relative;
         box-shadow: inset 0 2px 10px rgba(0,0,0,0.4);
-        backdrop-filter: blur(10px);
+        /* Removed backdrop-filter */
       }
       
       .ticker-content {
@@ -4002,7 +4069,7 @@ class OpenKairoMiningPanel extends LitElement {
         font-weight: 700;
         transition: all 0.3s cubic-bezier(0.25, 0.8, 0.25, 1); 
         color: var(--theme-text-dim);
-        backdrop-filter: blur(10px);
+        /* Removed backdrop-filter */
         text-align: center;
         flex: 1 1 auto;
         min-width: 140px;
@@ -4029,8 +4096,6 @@ class OpenKairoMiningPanel extends LitElement {
         box-shadow: 0 25px 60px rgba(0,0,0,0.7), inset 0 1px 1px rgba(255,255,255,0.08); 
         margin-bottom: 25px; 
         border: 1px solid var(--theme-border-color); 
-        backdrop-filter: blur(30px) saturate(160%);
-        -webkit-backdrop-filter: blur(30px) saturate(160%);
         position: relative;
         overflow: hidden;
       }
@@ -4113,8 +4178,6 @@ class OpenKairoMiningPanel extends LitElement {
         position: relative;
         border: 1px solid var(--theme-border-color);
         box-shadow: inset 0 1px 0 rgba(255,255,255,0.05), 0 8px 32px rgba(0,0,0,0.37);
-        backdrop-filter: blur(15px);
-        -webkit-backdrop-filter: blur(15px);
         transition: transform 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275), box-shadow 0.3s ease;
         overflow: hidden;
       }
@@ -4160,7 +4223,6 @@ class OpenKairoMiningPanel extends LitElement {
         background: rgba(0,0,0,0.6); color: var(--theme-text-dim); text-align: center; width: 100%; font-size: 1.2em;
         letter-spacing: 2px; border: 1px solid rgba(255,255,255,0.1);
         display: flex; align-items: center; justify-content: center;
-        backdrop-filter: blur(15px);
         box-shadow: 0 10px 25px rgba(0,0,0,0.4), inset 0 1px 1px rgba(255,255,255,0.1);
         transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
         text-transform: uppercase;
@@ -4238,12 +4300,17 @@ class OpenKairoMiningPanel extends LitElement {
         70% { box-shadow: 0 0 0 12px rgba(var(--theme-primary-rgb), 0); }
         100% { box-shadow: 0 0 0 0 rgba(var(--theme-primary-rgb), 0); }
       }
-      
+      @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.6; }
+        100% { opacity: 1; }
+      }
+
       .btn-power {
         background: rgba(30, 30, 35, 0.5); border: 1px solid var(--theme-border-color); border-radius: var(--theme-radius); color: var(--theme-text-dim);
         font-size: 1.5em; padding: 0 20px; cursor: pointer; transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
         display: flex; align-items: center; justify-content: center;
-        backdrop-filter: blur(10px);
+        /* Removed backdrop-filter */
         box-shadow: 0 4px 15px rgba(0,0,0,0.3);
       }
       .btn-power:hover { background: rgba(50,50,55,0.7); color: var(--theme-primary); border-color: var(--theme-primary); transform: translateY(-3px); box-shadow: 0 8px 25px rgba(var(--theme-primary-rgb), 0.2); }
@@ -4257,7 +4324,6 @@ class OpenKairoMiningPanel extends LitElement {
         display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; 
         background: rgba(255,255,255,0.03); padding: 15px; border-radius: 12px; margin-bottom: 25px; 
         border: 1px solid rgba(255,255,255,0.05);
-        backdrop-filter: blur(5px);
         box-shadow: inset 0 0 20px rgba(0,0,0,0.2);
       }
       .api-stats .stat { display: flex; flex-direction: column; align-items: center; }
@@ -4293,7 +4359,6 @@ class OpenKairoMiningPanel extends LitElement {
         background: rgba(30, 30, 35, 0.6); border: 1px solid var(--theme-border-color); border-radius: 10px; color: var(--theme-text-dim);
         font-size: 0.8em; padding: 10px 14px; cursor: pointer; transition: all 0.3s;
         font-weight: 800; letter-spacing: 1px; flex: 1; text-align: center;
-        backdrop-filter: blur(5px);
         text-transform: uppercase;
         box-shadow: 0 4px 10px rgba(0,0,0,0.2);
       }
@@ -4555,6 +4620,11 @@ class OpenKairoMiningPanel extends LitElement {
         text-shadow: 0 0 15px rgba(11, 196, 226, 0.6);
       }
 
+      /* Mobile back button - hidden on desktop */
+      .mobile-back-btn {
+        display: none;
+      }
+
       /* Bitcoin Ticker Styles */
       .ticker-container {
         display: flex;
@@ -4566,7 +4636,6 @@ class OpenKairoMiningPanel extends LitElement {
         padding: 15px 40px;
         margin: 10px 0 25px 0;
         box-shadow: inset 0 2px 20px rgba(0,0,0,0.8);
-        backdrop-filter: blur(15px);
       }
       .ticker-item {
         display: flex;
@@ -4631,8 +4700,8 @@ class OpenKairoMiningPanel extends LitElement {
           mask-image: linear-gradient(to right, transparent, black 15%, black 85%, transparent);
           -webkit-mask-image: linear-gradient(to right, transparent, black 15%, black 85%, transparent);
         }
-        .ticker-content {
-          animation: tickerScroll 25s linear infinite;
+        .ticker-container .ticker-content {
+          animation: tickerScroll 35s linear infinite;
           width: auto !important;
           justify-content: flex-start !important;
           gap: 40px !important;
@@ -4644,7 +4713,15 @@ class OpenKairoMiningPanel extends LitElement {
           align-items: center;
           gap: 60px;
         }
-        .ticker-content:hover { animation-play-state: paused; }
+        .ticker-container .ticker-content:hover { animation-play-state: paused; }
+        .activity-ticker-content {
+          animation: ticker-scroll 80s linear infinite !important;
+          white-space: nowrap;
+        }
+        .activity-ticker-item {
+          margin-right: 8vw !important;
+          font-size: 0.75em !important;
+        }
         
         .miner-card { padding: 15px !important; margin-bottom: 12px !important; }
         .miner-header { flex-direction: column; align-items: flex-start; gap: 8px; }
@@ -4700,8 +4777,28 @@ class OpenKairoMiningPanel extends LitElement {
           box-shadow: 0 0 15px rgba(var(--theme-accent-1-rgb), 0.3) !important;
         }
         .tab ha-icon { --mdc-icon-size: 18px !important; }
-        
-        
+
+        .mobile-back-btn {
+          display: flex !important;
+          position: fixed !important;
+          bottom: 24px !important;
+          left: 16px !important;
+          z-index: 9999 !important;
+          align-items: center !important;
+          gap: 8px !important;
+          padding: 12px 20px !important;
+          background: rgba(var(--theme-accent-1-rgb), 0.92) !important;
+          color: #000 !important;
+          border: none !important;
+          border-radius: 30px !important;
+          font-weight: 900 !important;
+          font-size: 0.85em !important;
+          letter-spacing: 1px !important;
+          cursor: pointer !important;
+          box-shadow: 0 4px 20px rgba(0,0,0,0.6), 0 0 15px rgba(var(--theme-accent-1-rgb), 0.3) !important;
+          text-transform: uppercase !important;
+        }
+
         .api-stats { grid-template-columns: repeat(2, 1fr) !important; gap: 10px !important; flex-wrap: unset !important; padding: 10px !important; }
         .api-stats .stat { min-width: unset !important; padding: 5px !important; }
         
@@ -4747,6 +4844,28 @@ class OpenKairoMiningPanel extends LitElement {
         .header-left { flex-direction: column !important; }
         .header-right { margin-top: 10px; }
         .header-right h1 { font-size: 1.8em !important; justify-content: center; }
+
+        /* Watchdog Mobile Optimization */
+        .watchdog-controls {
+          display: flex !important;
+          flex-direction: column !important;
+          align-items: flex-start !important;
+          gap: 12px !important;
+          margin-top: 15px !important;
+        }
+        .watchdog-controls span {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          width: 100%;
+          color: var(--theme-text-main);
+          font-weight: 600;
+        }
+        .watchdog-controls .tech-input {
+          width: 90px !important;
+          height: 40px !important;
+          margin: 0 5px;
+        }
       }
 
       /* Speziell für sehr schmale Handys */
