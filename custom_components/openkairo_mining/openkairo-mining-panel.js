@@ -24,17 +24,35 @@ class OpenKairoEntityPicker extends LitElement {
     this.placeholder = '-- Element suchen oder wählen --';
     this.open = false;
     this.search = '';
+    this._fixedTop = 0;
+    this._fixedLeft = 0;
+    this._fixedWidth = 300;
     this._documentClickListener = this._handleDocumentClick.bind(this);
+    this._scrollListener = () => { if (this.open) this._updateFixedPosition(); };
   }
 
   connectedCallback() {
     super.connectedCallback();
     document.addEventListener('click', this._documentClickListener);
+    window.addEventListener('scroll', this._scrollListener, true);
+    window.addEventListener('resize', this._scrollListener);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     document.removeEventListener('click', this._documentClickListener);
+    window.removeEventListener('scroll', this._scrollListener, true);
+    window.removeEventListener('resize', this._scrollListener);
+  }
+
+  _updateFixedPosition() {
+    const container = this.shadowRoot ? this.shadowRoot.querySelector('.picker-container') : null;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    this._fixedTop = rect.bottom + 2;
+    this._fixedLeft = rect.left;
+    this._fixedWidth = rect.width;
+    this.requestUpdate();
   }
 
   _handleDocumentClick(e) {
@@ -61,6 +79,7 @@ class OpenKairoEntityPicker extends LitElement {
   _handleFocus() {
     this.open = true;
     this._syncSearchToValue();
+    this.updateComplete.then(() => this._updateFixedPosition());
     setTimeout(() => {
       const input = this.shadowRoot.querySelector('input');
       if (input) input.select();
@@ -120,7 +139,7 @@ class OpenKairoEntityPicker extends LitElement {
         ${this.value ? html`<div class="clear-btn" @click="${this._clearSelection}">✕</div>` : ''}
         
         ${this.open ? html`
-          <div class="dropdown">
+          <div class="dropdown" style="position:fixed;top:${this._fixedTop}px;left:${this._fixedLeft}px;width:${this._fixedWidth}px;z-index:9999;">
             ${filtered.length > 0 ? filtered.map(ent => html`
               <div class="item ${this.value === ent.id ? 'selected' : ''}" @mousedown="${(e) => { e.preventDefault(); this._selectItem(ent.id, ent.name); }}">
                 <div class="item-name">${ent.name.replace(` (${ent.id})`, '')}</div>
@@ -207,17 +226,12 @@ class OpenKairoEntityPicker extends LitElement {
         background: rgba(255,255,255,0.15);
       }
       .dropdown {
-        position: absolute;
-        top: 100%;
-        left: 0;
-        right: 0;
-        margin-top: 5px;
+        /* position/top/left/width/z-index come from inline style (fixed positioning for iPad compat) */
         background: #1a1a1f;
         border: 1px solid #0bc4e2;
         border-radius: 8px;
         max-height: 280px;
         overflow-y: auto;
-        z-index: 9999;
         box-shadow: 0 10px 40px rgba(0,0,0,0.7);
       }
       .dropdown::-webkit-scrollbar {
@@ -351,6 +365,25 @@ class OpenKairoMiningPanel extends LitElement {
     }
   }
 
+  connectedCallback() {
+    super.connectedCallback();
+    // Panel was reconnected (e.g. tablet woke from sleep) — restart intervals and reload data
+    if (this._initialized && this.intervals && this.intervals.length === 0) {
+      this._startIntervals();
+      this.loadConfig().catch(e => console.error("loadConfig reconnect fail:", e));
+    }
+  }
+
+  _startIntervals() {
+    this.intervals.push(setInterval(() => { this.loadConfig(); }, 15 * 1000));
+    this.intervals.push(setInterval(() => {
+      this.fetchBtcPrice();
+      this.fetchMarketData();
+      this.fetchKaspaData();
+    }, 10 * 60 * 1000));
+    this.intervals.push(setInterval(() => { this.fetchBtcPriceHistory(); }, 60 * 60 * 1000));
+  }
+
   firstUpdated() {
     this.loadConfig().catch(e => console.error("loadConfig fail:", e));
     this.fetchBtcDifficulty().catch(e => console.error("fetchBtcDiff fail:", e));
@@ -359,25 +392,9 @@ class OpenKairoMiningPanel extends LitElement {
     this.fetchBtcPriceHistory().catch(e => console.error("fetchBtcHist fail:", e));
     this.fetchKaspaData().catch(e => console.error("fetchKaspa fail:", e));
 
-    // Error listener moved to constructor for earlier catching
     console.log("OpenKairoMiningPanel: firstUpdated called");
-    
-    // Refresh miner states/config every 15 seconds (matching backend loop)
-    this.intervals.push(setInterval(() => {
-      this.loadConfig();
-    }, 15 * 1000));
-
-    // Refresh market data every 10 minutes
-    this.intervals.push(setInterval(() => {
-      this.fetchBtcPrice();
-      this.fetchMarketData();
-      this.fetchKaspaData();
-    }, 10 * 60 * 1000));
-
-    // Refresh history every hour
-    this.intervals.push(setInterval(() => {
-      this.fetchBtcPriceHistory();
-    }, 60 * 60 * 1000));
+    this._startIntervals();
+    this._initialized = true;
   }
 
   async fetchMarketData() {
@@ -734,10 +751,12 @@ class OpenKairoMiningPanel extends LitElement {
           this.states = data.states || {};
           this.mempool = data.mempool || { fees: null, height: null, halving: null };
           this.logs = data.logs || [];
+          this.fleet = data.fleet || {};
         } else {
           this.config = { miners: [] };
           this.states = {};
           this.mempool = { fees: null, height: null, halving: null };
+          this.fleet = {};
         }
 
       }
@@ -787,7 +806,7 @@ class OpenKairoMiningPanel extends LitElement {
       pv_sensor: '',
       allow_battery: false,
       battery_sensor: '',
-      battery_min_soc: 100,
+      battery_min_soc: 50,
       price_sensor: '',
       image: '',
       hashrate_sensor: '',
@@ -825,7 +844,17 @@ class OpenKairoMiningPanel extends LitElement {
       offgrid_max_power: 1400,
       watchdog_type: 'power',
       min_run_time: 5,
-      grid_price_limit: null
+      grid_price_limit: null,
+      max_temp: '',
+      min_off_time: 0,
+      battery_hysteresis: 2,
+      max_runtime: '',
+      min_power: 400,
+      max_power: 1400,
+      scaling_mode: 'steps',
+      scaling_factor: 0.95,
+      power_step_limit: 0,
+      soc_proportional_scaling: false,
     };
   }
 
@@ -1515,127 +1544,331 @@ class OpenKairoMiningPanel extends LitElement {
   }
 
   renderInfo() {
+    const h2Style = 'display: flex; align-items: center; gap: 12px; margin: 0 0 18px 0; color: #fff; font-size: 1.2em; border-bottom: 1px solid rgba(255,255,255,0.08); padding-bottom: 10px;';
+    const badgeStyle = (color) => `display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 0.8em; font-weight: 700; background: ${color}22; color: ${color}; border: 1px solid ${color}44; white-space: nowrap;`;
+    const tipBox = (color, icon, text) => `<div style="display:flex;align-items:flex-start;gap:10px;background:${color}08;border-left:3px solid ${color};border-radius:0 8px 8px 0;padding:10px 14px;margin-top:12px;"><span style="font-size:1.2em;flex-shrink:0;">${icon}</span><span style="color:#bbb;font-size:0.88em;line-height:1.6;">${text}</span></div>`;
+
     return html`
-      <div class="card" style="padding: 30px;">
-        <h2 style="display: flex; align-items: center; gap: 15px; margin-top: 0;">
-          <span style="font-size: 1.5em;">🚀</span> OpenKairo Dashboard v1.3.19
-        </h2>
-        <p style="font-size: 1.1em; color: var(--theme-text-main); line-height: 1.6;">
-          <strong>Dein ultimatives Mining Control Center.</strong> <br>
-          Dieses Dashboard vereint alle Innovationen der letzten Monate in einer Oberfläche. Hier erfährst du, was OpenKairo so besonders macht:
-        </p>
+      <div style="padding: 30px; max-width: 1060px; margin: 0 auto;">
 
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; margin-top: 30px;">
-          
-          <div class="tech-box" style="border-top: 4px solid var(--theme-accent-1); background: rgba(var(--theme-accent-1-rgb), 0.03);">
-            <h3 style="margin-top:0; color:var(--theme-accent-1); display: flex; align-items: center; gap: 10px;">
-              <span>⚡</span> Direkte Steuerung & Power-Limit
-            </h3>
-            <p style="color:#bbb; line-height:1.6;">
-              Kontrolliere deine Hardware direkt aus dem Dashboard ohne Umwege:
-            </p>
-            <ul style="color:#888; font-size: 0.9em; padding-left: 20px; margin-bottom: 0; line-height: 1.5;">
-              <li><strong>Power Limit Slider:</strong> Reguliere die Wattzahl kompatibler Miner stufenlos im Dashboard.</li>
-              <li><strong>Hardware Buttons:</strong> Schalte zwischen LOW, NORM und HIGH Modus oder führe einen Reboot durch.</li>
-            </ul>
-          </div>
-
-          <div class="tech-box" style="border-top: 4px solid #e67e22; background: rgba(230, 126, 34, 0.03);">
-            <h3 style="margin-top:0; color:#e67e22; display: flex; align-items: center; gap: 10px;">
-              <span>🔥</span> Heiz-Modus (Mining as a Heater)
-            </h3>
-            <p style="color:#bbb; line-height:1.6;">
-              Verwandle Abwärme in Nutzwärme – intelligent gesteuert:
-            </p>
-            <ul style="color:#888; font-size: 0.9em; padding-left: 20px; margin-bottom: 0; line-height: 1.5;">
-              <li><strong>Temp-Steuerung:</strong> Automatische Ein-/Ausschaltung basierend auf HA-Temperatursensoren.</li>
-              <li><strong>SOC-Sperre:</strong> (Optional) Heize nur, wenn dein Haus-Akku ausreichend geladen ist.</li>
-            </ul>
-          </div>
-
-          <div class="tech-box" style="border-top: 4px solid var(--theme-accent-4); background: rgba(var(--theme-accent-4-rgb), 0.03);">
-            <h3 style="margin-top:0; color:var(--theme-accent-4); display: flex; align-items: center; gap: 10px;">
-              <span>🤖</span> Smarter Profit-Rechner (Auto-Fallback)
-            </h3>
-            <p style="color:#bbb; line-height:1.6;">
-              Du weißt immer genau, was hängen bleibt – auch wenn deine Pool-Daten mal nicht da sind:
-            </p>
-            <ul style="color:#888; font-size: 0.9em; padding-left: 20px; margin-bottom: 0; line-height: 1.5;">
-              <li><strong>Auto-Schätzung:</strong> Findet kein Pool-Sensor, nutzt das Dashboard die Live-Netzwerkdaten zur automatischen Ertrags-Vorschau.</li>
-              <li><strong>Echtzeit-Statistiken:</strong> Verfolgt deine 7-Tage Historie live aus der Home Assistant Datenbank.</li>
-            </ul>
-          </div>
-
-          <div class="tech-box" style="border-top: 4px solid var(--theme-accent-3); background: rgba(var(--theme-accent-3-rgb), 0.03);">
-            <h3 style="margin-top:0; color:var(--theme-accent-3); display: flex; align-items: center; gap: 10px;">
-              <span>📊</span> Präzise Markt-Daten & Ticker
-            </h3>
-            <p style="color:#bbb; line-height:1.6;">
-              Keine Schätzwerte mehr. Wir nutzen hochpräzise Schnittstellen:
-            </p>
-            <ul style="color:#888; font-size: 0.9em; padding-left: 20px; margin-bottom: 0; line-height: 1.5;">
-              <li><strong>High-Precision Price:</strong> Bitcoin Preise mit zwei Nachkommastellen für dein gesamtes Portfolio.</li>
-              <li><strong>Live Network Data:</strong> Aktuelle Gebühren (Fees), Halving-Countdown und Block-Height in Echtzeit vom Mempool.</li>
-            </ul>
-          </div>
-
-          <div class="tech-box" style="border-top: 4px solid var(--theme-accent-2); background: rgba(var(--theme-accent-2-rgb), 0.03);">
-            <h3 style="margin-top:0; color:var(--theme-accent-2); display: flex; align-items: center; gap: 10px;">
-              <span>🎨</span> Premium Design Studio
-            </h3>
-            <p style="color:#bbb; line-height:1.6;">
-              Dein Dashboard, dein Style. Wähle aus exklusiven Design-Presets:
-            </p>
-            <ul style="color:#888; font-size: 0.9em; padding-left: 20px; margin-bottom: 0; line-height: 1.5;">
-              <li><strong>Themen:</strong> Midnight Glow, Atlantis, Lava Field, Matrix und Solar.</li>
-              <li><strong>Anpassung:</strong> Jedes Design wurde für maximale Performance und eine premium Ästhetik optimiert.</li>
-            </ul>
-          </div>
-
+        <!-- Header -->
+        <div style="text-align: center; margin-bottom: 36px;">
+          <div style="font-size: 2.8em; margin-bottom: 8px;">⛏️</div>
+          <h1 style="margin: 0 0 6px 0; font-size: 1.7em; color: #fff;">OpenKairo Mining</h1>
+          <div style="color: var(--theme-accent-1); font-size: 1em; font-weight: 600; margin-bottom: 10px;">Benutzerhandbuch — Version 1.4.0</div>
+          <p style="color: #888; max-width: 560px; margin: 0 auto; line-height: 1.6; font-size: 0.95em;">
+            Alles was du wissen musst, um deine Miner intelligent zu steuern.
+          </p>
         </div>
 
-        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 20px; margin-top: 20px;">
-          
-          <div class="tech-box" style="border-left: 4px solid #ff9800; background: rgba(255,152,0,0.03);">
-             <h3 style="margin-top:0; color:#ff9800; display: flex; align-items: center; gap: 10px;">
-              <span>🎢</span> Ramping & Soft-Start
-            </h3>
-            <p style="color:#bbb; line-height:1.6;">
-              Schone deine Hardware und dein Stromnetz. Anstatt sofort auf 100% zu springen, fährt das System die Leistung stufenweise hoch oder runter.
-            </p>
-            <ul style="color:#888; font-size: 0.85em; padding-left: 20px; margin-bottom: 0;">
-              <li><strong>Schonung:</strong> Verhindert Spannungsspitzen und schont das Netzteil.</li>
-              <li><strong>Visualisierung:</strong> Während des Vorgangs pulsieren die Status-Badges <strong>orange</strong>.</li>
-            </ul>
-          </div>
+        <!-- ═══ 1. WELCHEN MODUS WÄHLE ICH? ═══ -->
+        <div class="tech-box" style="margin-top: 0;">
+          <h2 style="${h2Style}"><span>🤖</span> Welchen Modus soll ich wählen?</h2>
+          <p style="color:#bbb; font-size:0.9em; line-height:1.6; margin-bottom: 18px;">
+            Den Automations-Modus wählst du im Miner-Formular unter <strong>Einstellungen → Miner bearbeiten</strong>.
+            Jeder Miner kann seinen eigenen Modus haben.
+          </p>
 
-          <div class="tech-box" style="border-left: 4px solid #fff; background: rgba(255,255,255,0.03);">
-             <h3 style="margin-top:0; color:#fff; display: flex; align-items: center; gap: 10px;">
-              <span>🔒</span> Hardware Wächter 2.0
-            </h3>
-            <p style="color:#bbb; line-height:1.6;">
-              Vollautomatische Überwachung deiner Miner. Wenn etwas hängen bleibt, greift das System ein und startet die Hardware neu – inklusive Countdown-Timer im Dashboard.
-            </p>
-          </div>
+          <div style="display: flex; flex-direction: column; gap: 12px;">
 
-          <div class="tech-box" style="border-left: 4px solid var(--theme-accent-1); background: rgba(var(--theme-accent-1-rgb), 0.03);">
-             <h3 style="margin-top:0; color:var(--theme-accent-1); display: flex; align-items: center; gap: 10px;">
-              <span>☀️</span> PV & SOC Intelligenz
-            </h3>
-            <p style="color:#bbb; line-height:1.6;">
-              Maximiere die Nutzung deines Solarstroms. Miner schalten basierend auf deiner Einspeisung oder deinem Batterie-Ladestand (Hysterese-gesteuert).
-            </p>
-          </div>
+            <div style="border-left: 4px solid #aaa; background: rgba(255,255,255,0.02); border-radius: 0 10px 10px 0; padding: 12px 16px;">
+              <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
+                <span style="${badgeStyle('#aaa')}">Manuell</span>
+                <span style="font-weight: 700; color: #fff; font-size: 0.95em;">Immer laufen (manuell steuern)</span>
+              </div>
+              <p style="color: #888; margin: 0; font-size: 0.88em; line-height: 1.5;">
+                Der Miner läuft, solange sein HA-Schalter eingeschaltet ist — du entscheidest selbst wann er an und aus geht.
+                Gut zum Testen und für Miner, die dauerhaft laufen sollen.
+              </p>
+            </div>
 
+            <div style="border-left: 4px solid var(--theme-accent-1); background: rgba(var(--theme-accent-1-rgb), 0.03); border-radius: 0 10px 10px 0; padding: 12px 16px;">
+              <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
+                <span style="${badgeStyle('var(--theme-accent-1)')}">PV-Überschuss</span>
+                <span style="font-weight: 700; color: #fff; font-size: 0.95em;">Nur mit Solarstrom minen</span>
+              </div>
+              <p style="color: #888; margin: 0 0 6px 0; font-size: 0.88em; line-height: 1.5;">
+                Du hast eine Solaranlage und willst den Überschuss zum Minen nutzen statt ihn einzuspeisen.
+                Gib deinen PV-Sensor an (Watt-Einspeisung oder Überschuss-Sensor). Der Miner startet automatisch
+                wenn genug Leistung vorhanden ist, und passt seine Leistung laufend an. Sinkt der Überschuss,
+                fährt er runter — fällt er ganz weg, schaltet er sich aus.
+              </p>
+              <div style="font-size: 0.8em; color: #666;">Voraussetzung: PV-Sensor in Home Assistant · Optional: Batterie-Sensor für SOC-Sperre</div>
+            </div>
+
+            <div style="border-left: 4px solid #27ae60; background: rgba(39,174,96,0.03); border-radius: 0 10px 10px 0; padding: 12px 16px;">
+              <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
+                <span style="${badgeStyle('#27ae60')}">Batterie SOC</span>
+                <span style="font-weight: 700; color: #fff; font-size: 0.95em;">Nur minen wenn Akku voll genug ist</span>
+              </div>
+              <p style="color: #888; margin: 0 0 6px 0; font-size: 0.88em; line-height: 1.5;">
+                Du hast einen Heimspeicher und willst minen wenn er ausreichend geladen ist.
+                Stelle ein <em>ab welchem Ladestand</em> der Miner startet (z.B. 80%) und <em>bis zu welchem</em> er läuft (z.B. 40%).
+                Eine kleine Toleranz (Hysterese) verhindert, dass er ständig um den Schwellwert ein- und ausschaltet.
+              </p>
+              <div style="font-size: 0.8em; color: #666;">Voraussetzung: Batterie-Sensor (% Ladestand) in Home Assistant</div>
+            </div>
+
+            <div style="border-left: 4px solid #e67e22; background: rgba(230,126,34,0.03); border-radius: 0 10px 10px 0; padding: 12px 16px;">
+              <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
+                <span style="${badgeStyle('#e67e22')}">Heiz-Modus</span>
+                <span style="font-weight: 700; color: #fff; font-size: 0.95em;">Mining als Heizung nutzen</span>
+              </div>
+              <p style="color: #888; margin: 0 0 6px 0; font-size: 0.88em; line-height: 1.5;">
+                Dein Miner heizt einen Raum mit seiner Abwärme. Er läuft, wenn es zu kalt ist — und schaltet sich aus,
+                sobald die Zieltemperatur erreicht ist. Gib einen Raumtemperatur-Sensor an und stelle die gewünschten
+                Temperaturgrenzen ein (z.B. an bei 19°C, aus bei 21°C). Optional: Sperre aktivieren wenn der Akku zu leer ist.
+              </p>
+              <div style="font-size: 0.8em; color: #666;">Voraussetzung: Temperatur-Sensor in Home Assistant</div>
+            </div>
+
+            <div style="border-left: 4px solid #8e44ad; background: rgba(142,68,173,0.03); border-radius: 0 10px 10px 0; padding: 12px 16px;">
+              <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
+                <span style="${badgeStyle('#8e44ad')}">Offgrid</span>
+                <span style="font-weight: 700; color: #fff; font-size: 0.95em;">Inselanlage / Netzunabhängig — Beta</span>
+              </div>
+              <p style="color: #888; margin: 0 0 6px 0; font-size: 0.88em; line-height: 1.5;">
+                Für vollständig netzunabhängige Systeme. Die Miner-Leistung wird anhand einer SOC-Kurve berechnet:
+                Je voller der Akku, desto mehr darf der Miner verbrauchen. Optional kann ein mittlerer Kurven-Punkt
+                für eine nicht-lineare Steuerung gesetzt werden.
+              </p>
+              <div style="font-size: 0.8em; color: #666;">Voraussetzung: PV-Sensor + Batterie-Sensor · Beta-Funktion</div>
+            </div>
+
+            <div style="border-left: 4px solid #e74c3c; background: rgba(231,76,60,0.03); border-radius: 0 10px 10px 0; padding: 12px 16px;">
+              <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
+                <span style="${badgeStyle('#e74c3c')}">AI Akku-Optimierer</span>
+                <span style="font-weight: 700; color: #fff; font-size: 0.95em;">Nachts minen mit Akkustrom — Beta</span>
+              </div>
+              <p style="color: #888; margin: 0 0 6px 0; font-size: 0.88em; line-height: 1.5;">
+                Die Engine berechnet, wie viel Akkuenergie nach Abzug des Hausverbrauchs noch für's Mining übrig ist —
+                und plant die Startzeit so, dass der Akku morgens früh genau auf dem gewünschten Restladestand ankommt.
+                Optional: Wetter-Anbindung für Solar-Prognose am nächsten Tag.
+              </p>
+              <div style="font-size: 0.8em; color: #666;">Voraussetzung: Batterie-Sensor + Hausverbrauch-Sensor · Beta-Funktion</div>
+            </div>
+
+          </div>
         </div>
 
-        <div class="tech-box" style="margin-top: 40px; border-color: rgba(var(--theme-accent-1-rgb), 0.2); background: rgba(0,0,0,0.1); border-radius: 20px; padding: 30px;">
-          <h2 style="margin-top:0; color:#fff; text-align: center; margin-bottom: 30px;">☕ Projekt unterstützen</h2>
-          
+        <!-- ═══ 2. SOFT-START & LEISTUNGSSKALIERUNG ═══ -->
+        <div class="tech-box" style="margin-top: 24px;">
+          <h2 style="${h2Style}"><span>🎢</span> Soft-Start, Soft-Stop &amp; automatische Leistungsanpassung</h2>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px;">
+            <div style="background: rgba(255,152,0,0.04); border-radius: 10px; padding: 14px; border: 1px solid rgba(255,152,0,0.15);">
+              <div style="font-weight: 700; color: #ff9800; margin-bottom: 8px;">🚀 Soft-Start</div>
+              <p style="color: #888; font-size: 0.88em; line-height: 1.55; margin: 0;">
+                Statt sofort auf volle Leistung zu springen, fährt der Miner stufenweise hoch — vom Mindestwert
+                bis zur Maximalleistung. Schont das Netzteil und verhindert Spannungsspitzen im Hausnetz.
+                Erkennbar am orangenen SOFT-UP-Badge im Dashboard.
+              </p>
+              <div style="margin-top: 10px; font-size: 0.8em; color: #666;">Aktivieren: Miner bearbeiten → "Soft-Start aktivieren"</div>
+            </div>
+            <div style="background: rgba(52,152,219,0.04); border-radius: 10px; padding: 14px; border: 1px solid rgba(52,152,219,0.15);">
+              <div style="font-weight: 700; color: #3498db; margin-bottom: 8px;">🛬 Soft-Stop</div>
+              <p style="color: #888; font-size: 0.88em; line-height: 1.55; margin: 0;">
+                Beim Abschalten wird die Leistung erst auf den Mindestwert reduziert, bevor der Schalter ausgeht.
+                Verhindert abrupte Laständerungen und verlängert die Lebensdauer der Hardware.
+              </p>
+              <div style="margin-top: 10px; font-size: 0.8em; color: #666;">Aktivieren: Miner bearbeiten → "Soft-Stop aktivieren"</div>
+            </div>
+            <div style="background: rgba(var(--theme-accent-1-rgb),0.04); border-radius: 10px; padding: 14px; border: 1px solid rgba(var(--theme-accent-1-rgb),0.15);">
+              <div style="font-weight: 700; color: var(--theme-accent-1); margin-bottom: 8px;">⚖️ Automatische Nachskalierung</div>
+              <p style="color: #888; font-size: 0.88em; line-height: 1.55; margin: 0;">
+                Im PV-Modus passt die Engine die Leistung alle 15 Sekunden an den aktuellen Solarüberschuss an.
+                Zwei Methoden: <strong>Stufen</strong> (sanfte Schritte, gut für schwankende Anlagen) oder
+                <strong>Proportional</strong> (direkte 1:1-Anpassung, reagiert schneller).
+              </p>
+              <div style="margin-top: 10px; font-size: 0.8em; color: #666;">Aktivieren: Miner bearbeiten → "Automatische Nachskalierung" + Skalierungs-Modus wählen</div>
+            </div>
+          </div>
+
+          <div style="${tipBox('#ff9800', '💡', 'Min. Leistung und Max. Leistung definieren den erlaubten Bereich. Liegt der PV-Überschuss unter der Mindestleistung, schaltet der Miner komplett aus statt auf einem nicht-sinnvollen Niedrigstwert zu laufen.')}"></div>
+        </div>
+
+        <!-- ═══ 3. SICHERHEITSFUNKTIONEN ═══ -->
+        <div class="tech-box" style="margin-top: 24px;">
+          <h2 style="${h2Style}"><span>🛡️</span> Sicherheitsfunktionen</h2>
+
+          <div style="display: flex; flex-direction: column; gap: 14px;">
+
+            <div style="background: rgba(231,76,60,0.04); border-radius: 10px; padding: 14px 18px; border-left: 4px solid #e74c3c;">
+              <div style="font-weight: 700; color: #e74c3c; margin-bottom: 6px;">🌡️ Temperatur-Alarm (Notabschaltung)</div>
+              <p style="color: #888; font-size: 0.88em; line-height: 1.55; margin: 0;">
+                Stelle eine maximale Betriebstemperatur ein. Überschreitet dein Miner diesen Wert, schaltet die Engine
+                ihn sofort ab — unabhängig vom aktuellen Modus. Im Dashboard erscheint der rote TEMP-ALARM-Badge.
+                Der Miner startet erst wieder, wenn die Temperatur wieder darunter liegt.
+              </p>
+              <div style="margin-top: 8px; font-size: 0.8em; color: #666;">Einrichten: Miner bearbeiten → Sicherheit & Grenzen → "Max. Temperatur (°C)"</div>
+            </div>
+
+            <div style="background: rgba(255,152,0,0.04); border-radius: 10px; padding: 14px 18px; border-left: 4px solid #ff9800;">
+              <div style="font-weight: 700; color: #ff9800; margin-bottom: 6px;">⏱️ Maximale Laufzeit</div>
+              <p style="color: #888; font-size: 0.88em; line-height: 1.55; margin: 0;">
+                Damit ein Miner nicht unbeabsichtigt tagelang durchläuft: Stelle eine maximale Stundenzahl ein.
+                Nach Ablauf schaltet die Engine ihn ab. Die Automationslogik kann ihn bei passenden Bedingungen
+                wieder starten. Leer lassen = kein Limit.
+              </p>
+              <div style="margin-top: 8px; font-size: 0.8em; color: #666;">Einrichten: Miner bearbeiten → Sicherheit & Grenzen → "Max. Laufzeit (Stunden)"</div>
+            </div>
+
+            <div style="background: rgba(52,152,219,0.04); border-radius: 10px; padding: 14px 18px; border-left: 4px solid #3498db;">
+              <div style="font-weight: 700; color: #3498db; margin-bottom: 6px;">🔄 Mindest-Aus-Zeit (Anti-Cycling)</div>
+              <p style="color: #888; font-size: 0.88em; line-height: 1.55; margin: 0;">
+                Verhindert, dass der Miner bei schwankenden PV-Werten ständig ein- und ausschaltet.
+                Nach dem Abschalten muss erst eine Mindestpause (in Minuten) verstreichen, bevor er wieder starten darf.
+                Empfehlung: 5–10 Minuten für PV-Anlagen mit wechselhafter Bewölkung.
+              </p>
+              <div style="margin-top: 8px; font-size: 0.8em; color: #666;">Einrichten: Miner bearbeiten → Sicherheit & Grenzen → "Mindest-Aus-Zeit (Minuten)"</div>
+            </div>
+
+            <div style="background: rgba(39,174,96,0.04); border-radius: 10px; padding: 14px 18px; border-left: 4px solid #27ae60;">
+              <div style="font-weight: 700; color: #27ae60; margin-bottom: 6px;">📉 Batterie-Hysterese</div>
+              <p style="color: #888; font-size: 0.88em; line-height: 1.55; margin: 0;">
+                Verhindert Pendeln beim SOC-Modus. Beispiel: Einschalten bei 80%, Hysterese 2% — dann schaltet der
+                Miner erst bei 82% ein und erst bei 78% wieder aus. Standard: 2%.
+              </p>
+              <div style="margin-top: 8px; font-size: 0.8em; color: #666;">Einrichten: Miner bearbeiten → Sicherheit & Grenzen → "Batterie-Hysterese (%)"</div>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- ═══ 4. STANDBY-WÄCHTER ═══ -->
+        <div class="tech-box" style="margin-top: 24px;">
+          <h2 style="${h2Style}"><span>🔒</span> Standby-Wächter — automatischer Neustart bei Hängern</h2>
+          <p style="color:#bbb; font-size:0.9em; line-height:1.6; margin-bottom: 16px;">
+            Miner können sich aufhängen: der Schalter ist an, aber es kommt keine Hashrate.
+            Der Standby-Wächter erkennt das und greift automatisch ein.
+          </p>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; margin-bottom: 16px;">
+            <div style="background: rgba(255,255,255,0.03); border-radius: 10px; padding: 14px;">
+              <div style="font-weight: 700; color: #fff; margin-bottom: 6px; font-size: 0.9em;">1. Wächter aktivieren</div>
+              <div style="color: #888; font-size: 0.85em; line-height: 1.5;">Im Miner-Formular die Option "Standby-Wächter aktivieren" einschalten.</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.03); border-radius: 10px; padding: 14px;">
+              <div style="font-weight: 700; color: #fff; margin-bottom: 6px; font-size: 0.9em;">2. Überwachungstyp wählen</div>
+              <div style="color: #888; font-size: 0.85em; line-height: 1.5;"><strong style="color:#aaa;">Verbrauch:</strong> Wächter prüft den Watt-Sensor. Wenn er dauerhaft zu niedrig ist, liegt ein Hänger vor.<br><strong style="color:#aaa;">Limit:</strong> Wächter prüft ob das Power-Limit gesetzt ist aber kein Verbrauch stattfindet.</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.03); border-radius: 10px; padding: 14px;">
+              <div style="font-weight: 700; color: #fff; margin-bottom: 6px; font-size: 0.9em;">3. Wartezeit einstellen</div>
+              <div style="color: #888; font-size: 0.85em; line-height: 1.5;">Wie lange soll der Wächter warten bevor er eingreift? (Standard: 10 Minuten). Im Dashboard siehst du einen orangenen Countdown.</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.03); border-radius: 10px; padding: 14px;">
+              <div style="font-weight: 700; color: #fff; margin-bottom: 6px; font-size: 0.9em;">4. Aktion wählen</div>
+              <div style="color: #888; font-size: 0.85em; line-height: 1.5;"><strong style="color:#aaa;">Toggle:</strong> Schalter kurz aus und wieder an (einfachste Option).<br><strong style="color:#aaa;">Reboot:</strong> Hardware-Neustart via pyasic.<br><strong style="color:#aaa;">Backend-Neustart:</strong> Nur den Mining-Prozess neu starten (schonender).</div>
+            </div>
+          </div>
+
+          <div style="${tipBox('#3498db', '⏱️', 'Stelle unter "Mindest-Anlaufzeit" ein, wie lange der Miner braucht bis er hashrat (z.B. 5 Minuten für Antminer). Der Countdown startet erst danach — so wird ein normaler Boot-Vorgang nicht als Hänger erkannt.')}"></div>
+        </div>
+
+        <!-- ═══ 5. MEHRERE MINER & FLEET-BUDGET ═══ -->
+        <div class="tech-box" style="margin-top: 24px;">
+          <h2 style="${h2Style}"><span>🏭</span> Mehrere Miner &amp; Fleet Power Budget</h2>
+          <p style="color:#bbb; font-size:0.9em; line-height:1.6;">
+            Du kannst beliebig viele Miner hinzufügen. Jeder läuft mit seinem eigenen Modus unabhängig.
+            Das <strong>Fleet Power Budget</strong> setzt eine gemeinsame Obergrenze für alle Miner zusammen.
+          </p>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; margin-top: 14px;">
+            <div style="background: rgba(255,255,255,0.03); border-radius: 10px; padding: 14px;">
+              <div style="font-weight: 700; color: var(--theme-accent-1); margin-bottom: 6px; font-size: 0.9em;">Gesamt-Leistungslimit</div>
+              <div style="color: #888; font-size: 0.85em; line-height: 1.5;">Unter <strong>Einstellungen → Globale Optionen</strong> kannst du eine maximale Gesamtleistung (Watt) für alle Miner festlegen. 0 = kein Limit.</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.03); border-radius: 10px; padding: 14px;">
+              <div style="font-weight: 700; color: var(--theme-accent-1); margin-bottom: 6px; font-size: 0.9em;">Priorität</div>
+              <div style="color: #888; font-size: 0.85em; line-height: 1.5;">Jeder Miner hat eine Priorität (0–100). Wenn das Budget knapp wird, werden niedrig priorisierte Miner zuerst gedrosselt oder gestoppt. Setze wichtige Miner auf einen höheren Wert.</div>
+            </div>
+            <div style="background: rgba(255,255,255,0.03); border-radius: 10px; padding: 14px;">
+              <div style="font-weight: 700; color: var(--theme-accent-1); margin-bottom: 6px; font-size: 0.9em;">Fleet-Übersicht</div>
+              <div style="color: #888; font-size: 0.85em; line-height: 1.5;">Oben im Dashboard werden Gesamt-Hashrate, Gesamt-Leistung, Anzahl laufender Miner und dein Budget auf einen Blick angezeigt.</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ═══ 6. STATISTIKEN ═══ -->
+        <div class="tech-box" style="margin-top: 24px;">
+          <h2 style="${h2Style}"><span>📊</span> Statistiken &amp; Energie-Tracking</h2>
+          <p style="color:#bbb; font-size:0.9em; line-height:1.6; margin-bottom: 16px;">
+            Die Engine trackt automatisch Laufzeit und Energieverbrauch pro Miner — vollständig integriert in Home Assistant.
+          </p>
+
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px;">
+            <div style="text-align: center; background: rgba(255,255,255,0.03); border-radius: 10px; padding: 14px;">
+              <div style="font-size: 1.6em; margin-bottom: 6px;">⏱️</div>
+              <div style="font-weight: 700; color: #fff; font-size: 0.9em; margin-bottom: 4px;">Session-Laufzeit</div>
+              <div style="color: #888; font-size: 0.82em;">Stunden seit dem letzten Einschalten. Wird bei Abschalten auf 0 zurückgesetzt.</div>
+            </div>
+            <div style="text-align: center; background: rgba(255,255,255,0.03); border-radius: 10px; padding: 14px;">
+              <div style="font-size: 1.6em; margin-bottom: 6px;">📅</div>
+              <div style="font-weight: 700; color: #fff; font-size: 0.9em; margin-bottom: 4px;">Heute-Laufzeit</div>
+              <div style="color: #888; font-size: 0.82em;">Kumulative Betriebsstunden heute. Automatischer Reset um Mitternacht.</div>
+            </div>
+            <div style="text-align: center; background: rgba(255,255,255,0.03); border-radius: 10px; padding: 14px;">
+              <div style="font-size: 1.6em; margin-bottom: 6px;">⚡</div>
+              <div style="font-weight: 700; color: #fff; font-size: 0.9em; margin-bottom: 4px;">Energie (Wh)</div>
+              <div style="color: #888; font-size: 0.82em;">Verbrauch der Session und des Tages in Wattstunden. Kompatibel mit der HA Energie-Karte.</div>
+            </div>
+            <div style="text-align: center; background: rgba(255,255,255,0.03); border-radius: 10px; padding: 14px;">
+              <div style="font-size: 1.6em; margin-bottom: 6px;">🔢</div>
+              <div style="font-weight: 700; color: #fff; font-size: 0.9em; margin-bottom: 4px;">Start-Zähler</div>
+              <div style="color: #888; font-size: 0.82em;">Wie oft wurde der Miner in dieser Session gestartet? Nützlich zur Watchdog-Analyse.</div>
+            </div>
+          </div>
+
+          <div style="${tipBox('#27ae60', '🏠', 'Die Statistiken werden als <strong>HA-Entitäten</strong> unter deinem Miner angelegt (Kategorie: Diagnose). Du kannst sie direkt in HA-Dashboards, Energie-Karte und Automationen verwenden.')}"></div>
+          <div style="${tipBox('#3498db', '🔄', 'Session-Statistiken zurücksetzen: HA-Service <strong>openkairo_mining.reset_session_stats</strong> aufrufen (Entwicklerwerkzeuge → Dienste). Oder im Dashboard den Reset-Button beim Miner nutzen.')}"></div>
+        </div>
+
+        <!-- ═══ 7. MQTT ═══ -->
+        <div class="tech-box" style="margin-top: 24px;">
+          <h2 style="${h2Style}"><span>📡</span> MQTT — Daten nach außen übertragen</h2>
+          <p style="color:#bbb; font-size:0.9em; line-height:1.6;">
+            OpenKairo kann alle Miner-Zustände in Echtzeit an einen MQTT-Broker schicken — nützlich für
+            externes Monitoring, Node-RED Automationen, Grafana oder andere Systeme.
+          </p>
+          <div style="${tipBox('#9b59b6', '⚙️', 'MQTT einrichten: Unter <strong>Einstellungen → Globale Optionen</strong> ein Topic-Präfix eintragen (z.B. <strong>haus/miner</strong>). Die Engine veröffentlicht dann unter <em>haus/miner/{miner-name}/state</em> den aktuellen Zustand als JSON. Voraussetzung: HA MQTT-Broker ist aktiv (Einstellungen → Integrationen → MQTT).')}"></div>
+        </div>
+
+        <!-- ═══ 8. STATUS-BADGES ═══ -->
+        <div class="tech-box" style="margin-top: 24px;">
+          <h2 style="${h2Style}"><span>🚦</span> Was bedeuten die Status-Anzeigen?</h2>
+          <div style="display: flex; flex-wrap: wrap; gap: 12px;">
+            <div style="display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.03); padding: 10px 16px; border-radius: 10px; flex: 1; min-width: 200px;">
+              <span style="${badgeStyle('#27ae60')}">MINING</span>
+              <span style="color: #888; font-size: 0.88em;">Miner läuft und schürft aktiv.</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.03); padding: 10px 16px; border-radius: 10px; flex: 1; min-width: 200px;">
+              <span style="${badgeStyle('#3498db')}">STANDBY</span>
+              <span style="color: #888; font-size: 0.88em;">Eingeschaltet, aber noch keine Hashrate (Hochfahren).</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.03); padding: 10px 16px; border-radius: 10px; flex: 1; min-width: 200px;">
+              <span style="${badgeStyle('#ff9800')}">SOFT-UP</span>
+              <span style="color: #888; font-size: 0.88em;">Leistung wird gerade schrittweise hochgefahren.</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.03); padding: 10px 16px; border-radius: 10px; flex: 1; min-width: 200px;">
+              <span style="${badgeStyle('#e67e22')}">SOFT-DN</span>
+              <span style="color: #888; font-size: 0.88em;">Leistung wird sanft heruntergefahren vor dem Ausschalten.</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.03); padding: 10px 16px; border-radius: 10px; flex: 1; min-width: 200px;">
+              <span style="${badgeStyle('#e74c3c')}">TEMP-ALARM</span>
+              <span style="color: #888; font-size: 0.88em;">Notabschaltung wegen Überhitzung. Kühlt automatisch ab.</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,0.03); padding: 10px 16px; border-radius: 10px; flex: 1; min-width: 200px;">
+              <span style="${badgeStyle('#666')}">AUS</span>
+              <span style="color: #888; font-size: 0.88em;">Miner ist ausgeschaltet.</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ═══ 9. SUPPORT ═══ -->
+        <div class="tech-box" style="margin-top: 24px; border-color: rgba(var(--theme-accent-1-rgb), 0.2); background: rgba(0,0,0,0.1); border-radius: 20px; padding: 30px;">
+          <h2 style="margin-top:0; color:#fff; text-align: center; margin-bottom: 28px;">☕ Projekt unterstützen</h2>
           <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px;">
-            
-            <!-- PayPal Card -->
-            <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); border-radius: 16px; padding: 25px; text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center; transition: transform 0.3s ease; cursor: default;">
+            <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); border-radius: 16px; padding: 25px; text-align: center; display: flex; flex-direction: column; align-items: center; justify-content: center;">
               <div style="font-size: 2.5em; margin-bottom: 15px;">🚀</div>
               <h3 style="margin: 0 0 10px 0; color: #fff;">PayPal</h3>
               <p style="color: #888; font-size: 0.9em; margin-bottom: 20px;">Die klassische Unterstützung für Kaffee & Energie.</p>
@@ -1643,53 +1876,42 @@ class OpenKairoMiningPanel extends LitElement {
                 Spenden via PayPal
               </a>
             </div>
-
-            <!-- Bitcoin Card -->
-            <div style="background: rgba(var(--theme-accent-3-rgb, 255, 204, 0), 0.03); border: 1px solid rgba(var(--theme-accent-3-rgb, 255, 204, 0), 0.1); border-radius: 16px; padding: 25px; text-align: center; display: flex; flex-direction: column; align-items: center; transition: transform 0.3s ease;">
+            <div style="background: rgba(var(--theme-accent-3-rgb, 255, 204, 0), 0.03); border: 1px solid rgba(var(--theme-accent-3-rgb, 255, 204, 0), 0.1); border-radius: 16px; padding: 25px; text-align: center; display: flex; flex-direction: column; align-items: center;">
               <div style="background: #fff; padding: 10px; border-radius: 12px; margin-bottom: 15px; box-shadow: 0 0 20px rgba(0,0,0,0.3);">
                 <img src="https://api.qrserver.com/v1/create-qr-code/?size=100x100&data=bitcoin:37KAus3ABc6krJ5T4jZyLKVB3uzbfQZGWD" style="width: 100px; height: 100px; display: block;" alt="Bitcoin QR Code">
               </div>
               <h3 style="margin: 0 0 10px 0; color: var(--theme-accent-3);">Bitcoin</h3>
               <p style="color: #888; font-size: 0.8em; margin-bottom: 15px;">Direkt, dezentral & für Miner gemacht.</p>
-              <div @click="${(e) => { 
+              <div @click="${(e) => {
                 const addr = '37KAus3ABc6krJ5T4jZyLKVB3uzbfQZGWD';
                 if (navigator.clipboard && navigator.clipboard.writeText) {
                   navigator.clipboard.writeText(addr).then(() => {
                     this.dispatchEvent(new CustomEvent('hass-notification', { detail: { message: 'BTC Adresse kopiert!' }, bubbles: true, composed: true }));
                   }).catch(() => {
-                    // Fallback if clipboard fails
-                    const textArea = document.createElement('textarea');
-                    textArea.value = addr;
-                    document.body.appendChild(textArea);
-                    textArea.select();
-                    document.execCommand('copy');
-                    document.body.removeChild(textArea);
+                    const ta = document.createElement('textarea'); ta.value = addr;
+                    document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+                    document.body.removeChild(ta);
                     this.dispatchEvent(new CustomEvent('hass-notification', { detail: { message: 'BTC Adresse kopiert!' }, bubbles: true, composed: true }));
                   });
                 } else {
-                  // Immediate fallback for non-secure contexts
-                  const textArea = document.createElement('textarea');
-                  textArea.value = addr;
-                  document.body.appendChild(textArea);
-                  textArea.select();
-                  document.execCommand('copy');
-                  document.body.removeChild(textArea);
+                  const ta = document.createElement('textarea'); ta.value = addr;
+                  document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+                  document.body.removeChild(ta);
                   this.dispatchEvent(new CustomEvent('hass-notification', { detail: { message: 'BTC Adresse kopiert!' }, bubbles: true, composed: true }));
                 }
-              }}" 
-                   style="background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(var(--theme-accent-3-rgb), 0.3); font-family: monospace; font-size: 0.75em; color: var(--theme-accent-3); cursor: pointer; width: 100%; box-sizing: border-box; display: flex; justify-content: space-between; align-items: center; margin-top: 5px; min-height: 44px;" 
+              }}"
+                   style="background: rgba(0,0,0,0.4); padding: 12px; border-radius: 8px; border: 1px dashed rgba(var(--theme-accent-3-rgb), 0.3); font-family: monospace; font-size: 0.75em; color: var(--theme-accent-3); cursor: pointer; width: 100%; box-sizing: border-box; display: flex; justify-content: space-between; align-items: center; margin-top: 5px; min-height: 44px;"
                    title="Klick zum Kopieren">
                 <code style="word-break: break-all; text-align: left; padding-right: 10px;">37KAus3AB...QZGWD</code>
                 <span style="font-size: 1.2em;">📋</span>
               </div>
             </div>
-
           </div>
-
           <p style="color:#555; text-align: center; margin-top: 25px; font-size: 0.85em; font-style: italic;">
             OpenKairo ist ein leidenschaftliches Community-Projekt. Danke für deine Unterstützung!
           </p>
         </div>
+
       </div>
     `;
   }
@@ -1874,14 +2096,31 @@ class OpenKairoMiningPanel extends LitElement {
             </div>
           </div>
 
-          <!-- Card 4: Total Power -->
+          <!-- Card 4: Total Power + Fleet Budget -->
           <div class="stat-card" style="border-left: 5px solid var(--theme-accent-4);">
             <div class="card-header-row">
                <div class="lbl" style="color: var(--theme-accent-4);">Gesamtverbrauch</div>
-               <div class="badge" style="background: rgba(var(--theme-accent-4-rgb), 0.1); color: var(--theme-accent-4); border: 1px solid rgba(var(--theme-accent-4-rgb), 0.3);">Live</div>
+               <div class="badge" style="background: rgba(var(--theme-accent-4-rgb), 0.1); color: var(--theme-accent-4); border: 1px solid rgba(var(--theme-accent-4-rgb), 0.3);">
+                 ${this.fleet && this.fleet.miners_mining !== undefined ? `${this.fleet.miners_mining} Mining` : 'Live'}
+               </div>
             </div>
             <div class="stat-val">${(totalPowerW / 1000).toFixed(2)}</div>
             <div class="unit">kW</div>
+            ${this.fleet && this.fleet.budget_w ? (() => {
+              const pct = Math.min(100, Math.round((this.fleet.total_power_w / this.fleet.budget_w) * 100));
+              const color = pct > 90 ? '#e74c3c' : pct > 70 ? '#f39c12' : 'var(--theme-accent-4)';
+              return html`
+                <div style="margin-top: 8px;">
+                  <div style="display: flex; justify-content: space-between; font-size: 0.6em; color: rgba(255,255,255,0.4); margin-bottom: 3px;">
+                    <span>Fleet Budget</span><span style="color:${color}">${pct}%</span>
+                  </div>
+                  <div style="height: 4px; background: rgba(255,255,255,0.08); border-radius: 2px; overflow: hidden;">
+                    <div style="height: 100%; width: ${pct}%; background: ${color}; border-radius: 2px; transition: width 0.5s;"></div>
+                  </div>
+                  <div style="font-size: 0.55em; color: rgba(255,255,255,0.3); margin-top: 2px;">${Math.round(this.fleet.total_power_w)}W / ${this.fleet.budget_w}W</div>
+                </div>
+              `;
+            })() : ''}
           </div>
       </div>
     `;
@@ -2117,24 +2356,41 @@ class OpenKairoMiningPanel extends LitElement {
 
                   </div>
                 
+                ${stateObj && stateObj.temp_alarm ? html`
+                  <div style="background: rgba(231,76,60,0.25); border: 1px solid #e74c3c; padding: 10px 14px; border-radius: 8px; margin-bottom: 12px; display: flex; align-items: center; gap: 10px; animation: pulse 1.5s infinite;">
+                    <span style="font-size: 1.3em;">🌡️</span>
+                    <div>
+                      <div style="color: #e74c3c; font-weight: 900; font-size: 0.85em; letter-spacing: 1px;">TEMPERATUR-ALARM</div>
+                      <div style="color: rgba(255,255,255,0.6); font-size: 0.75em;">Miner wegen Überhitzung abgeschaltet</div>
+                    </div>
+                  </div>
+                ` : ''}
+
                 ${stateObj && stateObj.hardware_error ? html`
                     <div style="background: rgba(231, 76, 60, 0.2); border: 1px solid #e74c3c; padding: 15px; border-radius: 8px; margin-bottom: 15px; text-align: center;">
                        <strong style="color: #e74c3c; display: block; margin-bottom: 5px;">⚠️ HARDWARE NICHT GEFUNDEN</strong>
                        <p style="font-size: 0.85em; color: #fff; margin: 0;">
-                         Die Entitäten <code style="background: rgba(0,0,0,0.3); padding: 2px 4px;">${stateObj.missing_entities?.join(', ')}</code> wurden in Home Assistant nicht gefunden. 
+                         Die Entitäten <code style="background: rgba(0,0,0,0.3); padding: 2px 4px;">${stateObj.missing_entities?.join(', ')}</code> wurden in Home Assistant nicht gefunden.
                          Bitte prüfe die <strong>Miner-Integration</strong>.
                        </p>
                     </div>
                   ` : ''}
 
-                <div class="api-stats" style="background: rgba(15,15,20,0.9); border: 1px solid rgba(255,255,255,0.15); border-radius: 12px; padding: 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 20px; /* Removed backdrop-filter */">
+                ${stateObj && (stateObj.log_reason_on || stateObj.log_reason_off) ? html`
+                  <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 10px; padding: 6px 10px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 8px; font-size: 0.75em; color: rgba(255,255,255,0.45);">
+                    <ha-icon icon="mdi:information-outline" style="--mdc-icon-size: 13px; flex-shrink: 0;"></ha-icon>
+                    <span>${switchState === 'on' ? (stateObj.log_reason_on || '') : (stateObj.log_reason_off || '')}</span>
+                  </div>
+                ` : ''}
+
+                <div class="api-stats" style="background: rgba(15,15,20,0.9); border: 1px solid rgba(255,255,255,0.15); border-radius: 12px; padding: 12px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 10px; /* Removed backdrop-filter */">
                   <div class="stat" style="text-align: center;">
                     <div style="font-size: 0.55em; color: rgba(255,255,255,0.4); text-transform: uppercase; font-weight: 900; letter-spacing: 1.5px; margin-bottom: 5px;">Hashrate:</div>
                     <div style="font-size: 1.1em; font-weight: 950; color: #0bc4e2; font-family: 'Space Mono', monospace;">${hashrateValue}</div>
                   </div>
                   <div class="stat" style="text-align: center; border-left: 1px solid rgba(255,255,255,0.05);">
                     <div style="font-size: 0.55em; color: rgba(255,255,255,0.4); text-transform: uppercase; font-weight: 900; letter-spacing: 1.5px; margin-bottom: 5px;">Temp:</div>
-                    <div style="font-size: 1.1em; font-weight: 950; color: #0bc4e2; font-family: 'Space Mono', monospace;">${tempValue}</div>
+                    <div style="font-size: 1.1em; font-weight: 950; color: ${stateObj.temp_alarm ? '#e74c3c' : '#0bc4e2'}; font-family: 'Space Mono', monospace;">${tempValue}</div>
                   </div>
                   <div class="stat" style="text-align: center; border-left: 1px solid rgba(255,255,255,0.05);">
                     <div style="font-size: 0.55em; color: rgba(255,255,255,0.4); text-transform: uppercase; font-weight: 900; letter-spacing: 1.5px; margin-bottom: 5px;">Verbrauch:</div>
@@ -2145,6 +2401,24 @@ class OpenKairoMiningPanel extends LitElement {
                     <div style="font-size: 1.1em; font-weight: 950; color: #0bc4e2; font-family: 'Space Mono', monospace;">${batterySOCValue || '0%'}</div>
                   </div>
                 </div>
+
+                <!-- Session Stats Row -->
+                ${(stateObj.session_runtime_h > 0 || stateObj.today_energy_wh > 0 || stateObj.total_starts > 0) ? html`
+                  <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-bottom: 14px; background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.06); border-radius: 8px; padding: 8px 10px;">
+                    <div style="text-align: center;">
+                      <div style="font-size: 0.5em; color: rgba(255,255,255,0.3); text-transform: uppercase; font-weight: 800; letter-spacing: 1px; margin-bottom: 3px;">Session</div>
+                      <div style="font-size: 0.9em; font-weight: 900; color: rgba(255,255,255,0.7); font-family: 'Space Mono', monospace;">${stateObj.session_runtime_h?.toFixed(1) || '0.0'}h</div>
+                    </div>
+                    <div style="text-align: center; border-left: 1px solid rgba(255,255,255,0.05);">
+                      <div style="font-size: 0.5em; color: rgba(255,255,255,0.3); text-transform: uppercase; font-weight: 800; letter-spacing: 1px; margin-bottom: 3px;">Heute</div>
+                      <div style="font-size: 0.9em; font-weight: 900; color: rgba(255,255,255,0.7); font-family: 'Space Mono', monospace;">${stateObj.today_energy_wh?.toFixed(0) || '0'} Wh</div>
+                    </div>
+                    <div style="text-align: center; border-left: 1px solid rgba(255,255,255,0.05);">
+                      <div style="font-size: 0.5em; color: rgba(255,255,255,0.3); text-transform: uppercase; font-weight: 800; letter-spacing: 1px; margin-bottom: 3px;">Starts</div>
+                      <div style="font-size: 0.9em; font-weight: 900; color: rgba(255,255,255,0.7); font-family: 'Space Mono', monospace;">${stateObj.total_starts || 0}</div>
+                    </div>
+                  </div>
+                ` : html`<div style="margin-bottom: 14px;"></div>`}
                 
                 ${powerObj ? html`
                   <div class="power-limit-box" style="margin-top: 15px; background: rgba(0,0,0,0.2); padding: 15px; border-radius: 8px; border: 1px solid rgba(255,255,255,0.05);">
@@ -2169,7 +2443,7 @@ class OpenKairoMiningPanel extends LitElement {
                     <div class="slider-container">
                       ${(() => {
                         const min = powerObj.attributes?.min || 0;
-                        const max = ((miner.soft_start_enabled || miner.soft_stop_enabled) && miner.soft_target_power) ? miner.soft_target_power : (powerObj.attributes?.max || 100);
+                        const max = miner.soft_target_power || miner.max_power || powerObj.attributes?.max || 100;
                         const markers = this._getPowerMarkers(miner);
                         return html`
                           <div class="slider-markers">
@@ -2183,7 +2457,7 @@ class OpenKairoMiningPanel extends LitElement {
                       })()}
                       <input type="range" 
                              min="${powerObj.attributes?.min || 0}" 
-                             max="${((miner.soft_start_enabled || miner.soft_stop_enabled) && miner.soft_target_power) ? miner.soft_target_power : (powerObj.attributes?.max || 100)}" 
+                             max="${miner.soft_target_power || miner.max_power || powerObj.attributes?.max || 100}" 
                              step="${powerObj.attributes?.step || 1}" 
                              .value="${powerObj.state}" 
                              ?disabled="${(stateObj && stateObj.hardware_error) || (stateObj && stateObj.ramping)}"
@@ -2397,7 +2671,7 @@ class OpenKairoMiningPanel extends LitElement {
                     </div>
                   `}
 
-                   ${miner.forecast_enabled && miner.forecast_sensor ? html`
+                   ${miner.forecast_sensor && miner.forecast_enabled !== false ? html`
                         ${(() => {
                            const fState = forecastValue ? forecastValue.state : 'N/A';
                            const fMin = parseFloat(miner.forecast_min) || 0;
@@ -2676,6 +2950,19 @@ class OpenKairoMiningPanel extends LitElement {
               <input type="text" .value="${this.config.profile_image || ''}" @change="${(e) => { this.config.profile_image = e.target.value; this.saveConfig(true); }}" placeholder="https://...">
             </div>
           </div>
+
+          <div style="margin-top: 20px; border-top: 1px solid rgba(255,255,255,0.06); padding-top: 20px; display: flex; gap: 20px; flex-wrap: wrap;">
+            <div class="form-group" style="margin-bottom: 0; flex: 1; min-width: 220px;">
+              <label>Fleet Max Power (Watt)</label>
+              <input type="number" min="0" step="100" .value="${this.config.fleet_max_power || ''}" @change="${(e) => { this.config.fleet_max_power = e.target.value ? parseFloat(e.target.value) : null; this.saveConfig(true); }}" placeholder="z.B. 3000">
+              <small>Maximale Gesamt-Leistung aller Miner. Neue Einschaltvorgänge werden geblockt wenn Budget überschritten.</small>
+            </div>
+            <div class="form-group" style="margin-bottom: 0; flex: 1; min-width: 220px;">
+              <label>MQTT Prefix (Optional)</label>
+              <input type="text" .value="${this.config.mqtt_prefix || ''}" @change="${(e) => { this.config.mqtt_prefix = e.target.value; this.saveConfig(true); }}" placeholder="z.B. homeassistant/mining">
+              <small>Wenn gesetzt, werden Miner-States auf MQTT publiziert. Benötigt die MQTT-Integration in HA.</small>
+            </div>
+          </div>
         </div>
 
         <h2>🛠 Miner verwalten</h2>
@@ -2812,28 +3099,32 @@ class OpenKairoMiningPanel extends LitElement {
                     </div>
                 </div>
 
+                ${this.editForm.mode !== 'pv' ? html`
                 <div class="form-row" style="margin-top: -10px; margin-bottom: 20px;">
                     <div class="form-group flex-1">
-                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;" title="Versucht die Leistung auch nach manueller Änderung automatisch wieder an den PV Überschuss oder Zielwert anzupassen.">
+                        <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;" title="Versucht die Leistung auch nach manueller Änderung automatisch wieder an den Zielwert anzupassen.">
                             <input type="checkbox" name="soft_continuous_scaling" .checked="${this.editForm.soft_continuous_scaling}" @change="${this.handleFormInput}" style="width: 16px; height: 16px; margin: 0; accent-color: #0bc4e2;">
-                            <b>Automatische Nachskalierung (Kontinuierlich)</b>
+                            <b>Automatische Nachskalierung (SOC/Heizung)</b>
                         </label>
                     </div>
                 </div>
-
+                ` : ''}
 
                 ${this.editForm.soft_start_enabled || this.editForm.soft_stop_enabled || this.editForm.soft_continuous_scaling ? html`
 
                     <div class="form-row">
                         <div class="form-group flex-1">
-                            <label>Start-Abstufungen (Watt)</label>
-                            <input type="text" name="soft_start_steps" placeholder="100, 500, 1000" .value="${this.editForm.soft_start_steps || '100, 500, 1000'}" @input="${this.handleFormInput}">
-                            <small>Kommasepariert, z.B. 100, 500, 1000</small>
+                            <label style="display: flex; align-items: center; justify-content: space-between;">
+                                Start-Abstufungen (Watt)
+                                <button type="button" @click="${() => { const mn = parseFloat(this.editForm.min_power || 400); const mx = parseFloat(this.editForm.max_power || 1400); const s = Array.from({length: 4}, (_, i) => Math.round(mn + (mx - mn) * i / 3)); this.editForm = { ...this.editForm, soft_start_steps: s.join(', '), soft_stop_steps: [...s].reverse().join(', ') }; this.requestUpdate(); }}" style="font-size: 0.75em; padding: 2px 8px; background: rgba(11,196,226,0.15); border: 1px solid rgba(11,196,226,0.4); border-radius: 4px; color: #0bc4e2; cursor: pointer;">⚡ Auto</button>
+                            </label>
+                            <input type="text" name="soft_start_steps" .value="${this.editForm.soft_start_steps || '100, 500, 1000'}" @input="${this.handleFormInput}">
+                            <small>Kommasepariert. "Auto" berechnet 4 gleichmäßige Stufen zwischen Min. und Max. Leistung.</small>
                         </div>
                         <div class="form-group flex-1">
                             <label>Stopp-Abstufungen (Watt)</label>
-                            <input type="text" name="soft_stop_steps" placeholder="1000, 500, 100" .value="${this.editForm.soft_stop_steps || '1000, 500, 100'}" @input="${this.handleFormInput}">
-                            <small>Kommasepariert, z.B. 1000, 500, 100</small>
+                            <input type="text" name="soft_stop_steps" .value="${this.editForm.soft_stop_steps || '1000, 500, 100'}" @input="${this.handleFormInput}">
+                            <small>Umgekehrte Reihenfolge zum Herunterfahren. Wird von "Auto" automatisch befüllt.</small>
                         </div>
                     </div>
                     <div class="form-row">
@@ -2842,10 +3133,9 @@ class OpenKairoMiningPanel extends LitElement {
                             <input type="number" name="soft_interval" min="10" .value="${this.editForm.soft_interval || 60}" @input="${this.handleFormInput}">
                             <small>Wartezeit zwischen den Stufen.</small>
                         </div>
-                        <div class="form-group flex-1">
-                             <label>End-Leistung (Watt)</label>
-                             <input type="number" name="soft_target_power" .value="${this.editForm.soft_target_power || 1200}" @input="${this.handleFormInput}">
-                             <small>Zielwert nach dem Hochfahren.</small>
+                        <div class="form-group flex-1" style="display: flex; align-items: center; background: rgba(11,196,226,0.05); border: 1px dashed rgba(11,196,226,0.2); border-radius: 8px; padding: 12px; gap: 10px;">
+                            <span style="font-size: 1.4em;">ℹ️</span>
+                            <span style="color: #888; font-size: 0.85em; line-height: 1.5;">Die Ziel-Leistung nach dem Hochfahren wird aus <strong style="color: var(--theme-accent-1);">Max. Leistung</strong> übernommen (Sicherheit & Grenzen unten).</span>
                         </div>
                     </div>
                 ` : ''}
@@ -2919,7 +3209,7 @@ class OpenKairoMiningPanel extends LitElement {
                     </div>
                     <div class="form-group flex-1">
                         <label>Minimale Batterieladung (%)</label>
-                        <input type="number" min="0" max="100" name="battery_min_soc" .value="${this.editForm.battery_min_soc || 100}" @input="${this.handleFormInput}">
+                        <input type="number" min="0" max="100" name="battery_min_soc" .value="${this.editForm.battery_min_soc || 50}" @input="${this.handleFormInput}">
                         <small>Miner läuft, solange Batterie ≥ diesem Wert.</small>
                     </div>
                 </div>
@@ -2955,6 +3245,33 @@ class OpenKairoMiningPanel extends LitElement {
                 </div>
                 <small style="color: #888;">Ermöglicht Mining bei günstigen Netzpreisen, auch ohne PV-Überschuss.</small>
             </div>
+
+            <!-- Live-Tracking Block -->
+            ${this.editForm.power_entity ? html`
+            <div style="margin-top: 15px; padding: 14px; background: rgba(0,255,136,0.05); border: 1px solid rgba(0,255,136,0.25); border-radius: 8px;">
+                <div style="color: #00ff88; font-weight: bold; margin-bottom: 6px;">⚡ Leistungs-Tracking aktiv</div>
+                <p style="font-size: 0.85em; color: #bbb; margin: 0 0 12px 0;">Leistung wird automatisch dem PV-Überschuss nachgeführt. Kein weiteres Einrichten nötig.</p>
+                <div class="form-row">
+                    <div class="form-group flex-1">
+                        <label>Skalierungs-Faktor</label>
+                        <input type="number" name="scaling_factor" min="0.1" max="1.0" step="0.01" .value="${this.editForm.scaling_factor !== undefined ? this.editForm.scaling_factor : 0.95}" @input="${this.handleFormInput}">
+                        <small>Anteil des Überschusses für den Miner (Standard: 0.95 = 95%)</small>
+                    </div>
+                    <div class="form-group flex-1">
+                        <label>Skalierungs-Modus</label>
+                        <select name="scaling_mode" @change="${this.handleFormInput}">
+                            <option value="proportional" ?selected="${(this.editForm.scaling_mode || 'proportional') === 'proportional'}">Proportional (empfohlen)</option>
+                            <option value="steps" ?selected="${this.editForm.scaling_mode === 'steps'}">Stufen</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+            ` : html`
+            <div style="margin-top: 15px; padding: 12px; background: rgba(255,152,0,0.05); border: 1px dashed rgba(255,152,0,0.3); border-radius: 8px; display: flex; align-items: center; gap: 10px;">
+                <span style="font-size: 1.3em;">⚠️</span>
+                <span style="font-size: 0.85em; color: #bbb;">Für Live-Tracking (Leistung folgt dem Überschuss): unter <strong style="color: #ff9800;">Sensoren &amp; Steuerung</strong> einen <strong>Power-Limit Sensor</strong> auswählen.</span>
+            </div>
+            `}
           </div>
         ` : ''}
 
@@ -3050,6 +3367,10 @@ class OpenKairoMiningPanel extends LitElement {
             <div class="form-group">
                 <label>Raumtemperatur-Sensor</label>
                 <openkairo-entity-picker name="target_temp_sensor" placeholder="-- Temperatur Sensor suchen --" .value="${this.editForm.target_temp_sensor || ''}" .entities="${sensorOptions}" @change="${this.handleFormInput}"></openkairo-entity-picker>
+                ${this.editForm.target_temp_sensor && this.hass?.states[this.editForm.target_temp_sensor] ? html`
+                <div style="margin-top: 6px; padding: 6px 10px; background: rgba(230,126,34,0.1); border-radius: 6px; font-size: 0.85em; color: #e67e22;">
+                    📍 Aktuell: <strong>${this.hass.states[this.editForm.target_temp_sensor].state} °C</strong>
+                </div>` : ''}
             </div>
 
             <div class="form-row">
@@ -3077,7 +3398,7 @@ class OpenKairoMiningPanel extends LitElement {
                     </div>
                     <div class="form-group flex-1">
                         <label>Minimale Batterieladung (%)</label>
-                        <input type="number" min="0" max="100" name="battery_min_soc" .value="${this.editForm.battery_min_soc || 100}" @input="${this.handleFormInput}">
+                        <input type="number" min="0" max="100" name="battery_min_soc" .value="${this.editForm.battery_min_soc || 50}" @input="${this.handleFormInput}">
                         <small>Nur heizen bei SOC ≥ X%.</small>
                     </div>
                 </div>
@@ -3113,11 +3434,15 @@ class OpenKairoMiningPanel extends LitElement {
                 <div class="form-group flex-2">
                     <label>Hausakku SOC-Sensor (%)</label>
                     <openkairo-entity-picker name="battery_sensor" placeholder="-- Batterie % Sensor --" .value="${this.editForm.battery_sensor || ''}" .entities="${sensorOptions}" @change="${this.handleFormInput}"></openkairo-entity-picker>
+                    ${this.editForm.battery_sensor && this.hass?.states[this.editForm.battery_sensor] ? html`
+                    <div style="margin-top: 6px; padding: 6px 10px; background: rgba(155,89,182,0.1); border-radius: 6px; font-size: 0.85em; color: #9b59b6;">
+                        🔋 Aktuell: <strong>${this.hass.states[this.editForm.battery_sensor].state} %</strong>
+                    </div>` : ''}
                 </div>
                 <div class="form-group flex-1">
                     <label>Akku Kapazität (kWh)</label>
                     <input type="number" step="0.1" name="battery_capacity" .value="${this.editForm.battery_capacity || 10}" @input="${this.handleFormInput}">
-                    <small>Usable Capacity.</small>
+                    <small>Nutzbare Kapazität des Akkus.</small>
                 </div>
             </div>
 
@@ -3130,8 +3455,8 @@ class OpenKairoMiningPanel extends LitElement {
             <div class="form-row">
                 <div class="form-group flex-1">
                     <label>Ziel-Uhrzeit (Morgens)</label>
-                    <input type="text" name="target_time" placeholder="07:30" .value="${this.editForm.target_time || '07:00'}" @input="${this.handleFormInput}">
-                    <small>Format HH:MM</small>
+                    <input type="time" name="target_time" .value="${this.editForm.target_time || '07:00'}" @input="${this.handleFormInput}">
+                    <small>Wann soll der Akku den Ziel-SOC erreicht haben?</small>
                 </div>
                 <div class="form-group flex-1">
                     <label>Ziel-SOC am Morgen (%)</label>
@@ -3142,8 +3467,8 @@ class OpenKairoMiningPanel extends LitElement {
 
             <div class="form-group mt-3" style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
                 <label>⚡ Voraussichtlicher Miner-Verbrauch (Watt)</label>
-                <input type="number" name="soft_target_power" .value="${this.editForm.soft_target_power || (this.editForm.name && this.editForm.name.toLowerCase().includes('nerd') ? 2 : 1200)}" @input="${this.handleFormInput}">
-                <small>Wird für die KI-Planung genutzt (wichtig für Geräte wie Nerdminer/Bitaxe).</small>
+                <input type="number" name="soft_target_power" .value="${this.editForm.soft_target_power || this.editForm.max_power || (this.editForm.name && this.editForm.name.toLowerCase().includes('nerd') ? 2 : 1200)}" @input="${this.handleFormInput}">
+                <small>Für die KI-Berechnung (Standard: Max. Leistung aus Sicherheit & Grenzen). Für Nerdminer/Bitaxe manuell anpassen.</small>
             </div>
 
             <div class="form-group mt-3" style="border-top: 1px solid rgba(255,255,255,0.1); padding-top: 15px;">
@@ -3224,6 +3549,85 @@ class OpenKairoMiningPanel extends LitElement {
             </div>
             ` : ''}
         </div>
+
+        <!-- Sicherheit & Grenzen -->
+        <div class="mode-section btc-section" style="margin-top: 20px; border-color: rgba(231, 76, 60, 0.3); background: rgba(231, 76, 60, 0.03);">
+          <h3 style="color: #e74c3c; margin-top: 0; margin-bottom: 5px;">🌡️ Sicherheit & Grenzen</h3>
+          <p style="color: #bbb; font-size: 0.85em; margin-bottom: 20px;">Schütze deine Hardware vor Überhitzung, Dauerläufen und schnellen Schalt-Zyklen.</p>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label>Max. Temperatur (°C)</label>
+              <input type="number" name="max_temp" placeholder="z.B. 85" .value="${this.editForm.max_temp || ''}" @input="${this.handleFormInput}">
+              <small>Sofortiger Sicherheitsstopp bei Überschreitung. Leer = deaktiviert.</small>
+            </div>
+            <div class="form-group flex-1">
+              <label>Max. Laufzeit (Stunden)</label>
+              <input type="number" name="max_runtime" placeholder="z.B. 24" .value="${this.editForm.max_runtime || ''}" @input="${this.handleFormInput}">
+              <small>Automatischer Stopp nach X Stunden Session. Leer = deaktiviert.</small>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label>Mindest-Aus-Zeit (Minuten)</label>
+              <input type="number" name="min_off_time" min="0" step="1" .value="${this.editForm.min_off_time !== undefined ? this.editForm.min_off_time : 0}" @input="${this.handleFormInput}">
+              <small>Verhindert Rapid-Cycling. Mindest-Pause bevor Wiedereinschalten erlaubt ist.</small>
+            </div>
+            <div class="form-group flex-1">
+              <label>Batterie-Hysterese (%)</label>
+              <input type="number" name="battery_hysteresis" min="0" max="20" step="0.5" .value="${this.editForm.battery_hysteresis !== undefined ? this.editForm.battery_hysteresis : 2}" @input="${this.handleFormInput}">
+              <small>SOC-Puffer beim Einschalten (Standard: 2%). Gilt für PV / SOC / Offgrid-Modi.</small>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label>Min. Leistung (Watt)</label>
+              <input type="number" name="min_power" min="0" step="50" .value="${this.editForm.min_power || 400}" @input="${this.handleFormInput}">
+              <small>Untere Grenze für Skalierung & Soft-Start.</small>
+            </div>
+            <div class="form-group flex-1">
+              <label>Max. Leistung (Watt)</label>
+              <input type="number" name="max_power" min="0" step="50" .value="${this.editForm.max_power || 1400}" @input="${this.handleFormInput}">
+              <small>Obere Grenze für Skalierung & Soft-Start.</small>
+            </div>
+          </div>
+        </div>
+
+        ${this.editForm.soft_continuous_scaling ? html`
+        <!-- Leistungs-Skalierung -->
+        <div class="mode-section btc-section" style="margin-top: 20px; border-color: rgba(var(--theme-accent-4-rgb, 0, 255, 136), 0.3); background: rgba(0, 255, 136, 0.02);">
+          <h3 style="color: var(--theme-accent-4); margin-top: 0; margin-bottom: 5px;">⚡ Leistungs-Skalierung (Kontinuierlich)</h3>
+          <p style="color: #bbb; font-size: 0.85em; margin-bottom: 20px;">Steuert wie smooth die Leistung an PV/SOC-Änderungen angepasst wird.</p>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label>Skalierungs-Modus</label>
+              <select name="scaling_mode" @change="${this.handleFormInput}">
+                <option value="steps" ?selected="${(this.editForm.scaling_mode || 'steps') === 'steps'}">Stufen (Standard)</option>
+                <option value="proportional" ?selected="${this.editForm.scaling_mode === 'proportional'}">Proportional (PV-Tracking)</option>
+              </select>
+              <small>Proportional: Leistung ≈ PV-Wert × Faktor. Stufen: springt zwischen den konfigurierten Abstufungen.</small>
+            </div>
+            <div class="form-group flex-1">
+              <label>Skalierungs-Faktor</label>
+              <input type="number" name="scaling_factor" min="0.1" max="2.0" step="0.01" .value="${this.editForm.scaling_factor !== undefined ? this.editForm.scaling_factor : 0.95}" @input="${this.handleFormInput}">
+              <small>Anteil der PV-Leistung für den Miner (Standard: 0.95 = 95%). Nur im Proportional-Modus.</small>
+            </div>
+          </div>
+          <div class="form-row">
+            <div class="form-group flex-1">
+              <label>Max. Änderung pro Tick (Watt)</label>
+              <input type="number" name="power_step_limit" min="0" step="50" .value="${this.editForm.power_step_limit || 0}" @input="${this.handleFormInput}">
+              <small>Rate-Limiting: Begrenzt die Leistungsänderung pro 15s-Zyklus. 0 = unbegrenzt (sofort).</small>
+            </div>
+            <div class="form-group flex-1" style="display: flex; flex-direction: column; justify-content: center; padding-top: 8px;">
+              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; margin-bottom: 6px;">
+                <input type="checkbox" name="soc_proportional_scaling" .checked="${this.editForm.soc_proportional_scaling || false}" @change="${this.handleFormInput}" style="width: 16px; height: 16px; accent-color: var(--theme-accent-4);">
+                <b>SOC-proportionale Skalierung</b>
+              </label>
+              <small>Im SOC-Modus: Leistung linear zum aktuellen Ladestand skalieren statt Schwellwert-Logik.</small>
+            </div>
+          </div>
+        </div>
+        ` : ''}
 
         <div class="form-actions">
             <button class="btn-cancel" @click="${this.cancelEdit}">Abbrechen</button>
