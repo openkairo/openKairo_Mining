@@ -96,7 +96,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
         config={
             "_panel_custom": {
                 "name": "openkairo-mining-panel",
-                "module_url": f"/api/{DOMAIN}/frontend/openkairo-mining-panel.js?v=1.4.4"
+                "module_url": f"/api/{DOMAIN}/frontend/openkairo-mining-panel.js?v=1.4.5"
             }
         },
         require_admin=True
@@ -182,7 +182,10 @@ class OpenKairoMiningFrontendView(HomeAssistantView):
         path = os.path.join(os.path.dirname(__file__), "openkairo-mining-panel.js")
         hass = request.app["hass"]
         try:
-            content = await hass.async_add_executor_job(lambda: open(path, "r", encoding="utf-8").read())
+            def _read_js():
+                with open(path, "r", encoding="utf-8") as f:
+                    return f.read()
+            content = await hass.async_add_executor_job(_read_js)
             from aiohttp import web
             return web.Response(body=content, content_type="application/javascript")
         except OSError as e:
@@ -208,14 +211,19 @@ class OpenKairoMiningApiView(HomeAssistantView):
             clean_s = {k: v for k, v in s.items() if k != "active_ramping_task"}
             wd_start = s.get("standby_since")
             clean_s["watchdog_remaining"] = 0
-            if wd_start:
-                try:
-                    m_cfg = next((m for m in config.get("miners", []) if m.get("id") == mid or m.get("miner_ip") == mid), {})
-                    if m_cfg.get("standby_watchdog_enabled"):
-                        delay = float(m_cfg.get("standby_delay", 10)) * 60
+            clean_s["watchdog_cooldown_remaining"] = 0
+            try:
+                m_cfg = next((m for m in config.get("miners", []) if m.get("id") == mid or m.get("miner_ip") == mid), {})
+                if m_cfg.get("standby_watchdog_enabled"):
+                    delay = float(m_cfg.get("standby_delay", 10)) * 60
+                    if wd_start:
                         clean_s["watchdog_remaining"] = int(max(0, delay - (time.time() - wd_start)))
-                except Exception:
-                    pass
+                    wd_last = s.get("watchdog_last_action", 0)
+                    if wd_last:
+                        cooldown = max(delay, 300)
+                        clean_s["watchdog_cooldown_remaining"] = int(max(0, cooldown - (time.time() - wd_last)))
+            except Exception:
+                pass
             sw_on, is_mining, ramping = s.get("is_on", False), s.get("is_mining", False), s.get("ramping")
             if not sw_on: clean_s["status_msg"] = "AUS"
             elif ramping == "up": clean_s["status_msg"] = "SOFT-UP"
@@ -296,8 +304,8 @@ class OpenKairoMiningApiView(HomeAssistantView):
             if "update_global_config" in data:
                 params = data.get("params", {})
                 config = hass.data.get(DOMAIN, {}).get("config", {"miners": []})
-                for m in config.get("miners", []):
-                    for k, v in params.items(): m[k] = v
+                for k, v in params.items():
+                    config[k] = v
                 await hass.async_add_executor_job(_save_config, hass, config)
                 from aiohttp import web
                 return web.json_response({"status": "success", "updated": "all"})

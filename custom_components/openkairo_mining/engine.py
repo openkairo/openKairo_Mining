@@ -60,6 +60,53 @@ class MiningEngine:
         self._logs = self._logs[:MAX_LOG_ENTRIES]
         _LOGGER.info(f"[OpenKairo Log] {message}")
 
+    # Fields that survive a HA restart — everything else resets cleanly.
+    _PERSIST_FIELDS = (
+        "today_runtime_s", "today_energy_wh", "total_starts",
+        "watchdog_last_action", "off_since_actual", "on_since_actual", "stats_day",
+    )
+
+    @property
+    def _state_file(self) -> str:
+        return self.hass.config.path(".storage", "openkairo_mining_state.json")
+
+    async def _load_persistent_state(self) -> None:
+        """Restore per-miner stats from disk after a HA restart."""
+        try:
+            def _read_state():
+                if not os.path.exists(self._state_file):
+                    return None
+                with open(self._state_file, encoding="utf-8") as f:
+                    return f.read()
+            raw = await self.hass.async_add_executor_job(_read_state)
+            if not raw:
+                return
+            saved = json.loads(raw)
+            for miner_id, fields in saved.items():
+                if miner_id not in self._miner_states:
+                    self._miner_states[miner_id] = {}
+                for key in self._PERSIST_FIELDS:
+                    if key in fields:
+                        self._miner_states[miner_id][key] = fields[key]
+            _LOGGER.info(f"[OpenKairo] Restored state for {len(saved)} miner(s) from disk.")
+        except Exception as e:
+            _LOGGER.warning(f"[OpenKairo] Could not load persistent state: {e}")
+
+    async def _save_persistent_state(self) -> None:
+        """Write per-miner stats to disk so they survive a HA restart."""
+        try:
+            payload = {
+                mid: {k: s[k] for k in self._PERSIST_FIELDS if k in s}
+                for mid, s in self._miner_states.items()
+            }
+            raw = json.dumps(payload)
+            def _write_state():
+                with open(self._state_file, "w", encoding="utf-8") as f:
+                    f.write(raw)
+            await self.hass.async_add_executor_job(_write_state)
+        except Exception as e:
+            _LOGGER.warning(f"[OpenKairo] Could not save persistent state: {e}")
+
     async def _publish_mqtt(self, topic: str, payload: str):
         """Publish to MQTT if the integration is configured and available."""
         try:
@@ -188,6 +235,10 @@ class MiningEngine:
     async def async_run(self):
         """Main loop execution."""
         _LOGGER.info("OpenKairo Mining Engine started")
+        await self._load_persistent_state()
+        _tick = 0
+        # Save every 20 ticks (~5 min at 15s interval).
+        _SAVE_EVERY = 20
         try:
             while True:
                 try:
@@ -198,7 +249,7 @@ class MiningEngine:
 
                     config = self.hass.data.get(DOMAIN, {}).get("config", {})
                     miners = config.get("miners", [])
-                    sorted_miners = sorted(miners, key=lambda x: int(x.get("priority", 99)))
+                    sorted_miners = sorted(miners, key=lambda x: int(x.get("priority") or 99) if str(x.get("priority", "99")).strip().isdigit() else 99)
 
                     global_pv_surplus = None
                     house_sensor = config.get("house_power_sensor")
@@ -216,6 +267,10 @@ class MiningEngine:
                         except Exception as miner_err:
                             _LOGGER.error(f"Error processing miner {miner.get('name')}: {miner_err}", exc_info=True)
 
+                    _tick += 1
+                    if _tick % _SAVE_EVERY == 0:
+                        await self._save_persistent_state()
+
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
@@ -224,33 +279,29 @@ class MiningEngine:
                 await asyncio.sleep(ENGINE_LOOP_INTERVAL)
         except asyncio.CancelledError:
             _LOGGER.info("OpenKairo Mining Engine stopping (task cancelled)")
+            await self._save_persistent_state()
             raise
 
     async def _process_miner(self, miner, global_pv_surplus):
         miner_id = str(miner.get("id", miner.get("name", "Unknown")))
         if miner_id not in self._miner_states:
-            self._miner_states[miner_id] = {
-                "on_since": None,
-                "off_since": None,
-                "off_since_actual": None,
-                "standby_since": None,
-                "last_sensor_update": time.time(),
-                # Stats
-                "stats_last_tick": None,
-                "session_runtime_s": 0,
-                "session_energy_wh": 0.0,
-                "today_runtime_s": 0,
-                "today_energy_wh": 0.0,
-                "stats_day": None,
-                "total_starts": 0,
-                # Safety
-                "temp_alarm": False,
-                "max_runtime_alarm": False,
-            }
-            # First-time entity validation (non-blocking — only logs warnings)
-            self._validate_miner_entities(miner)
-        
+            self._miner_states[miner_id] = {}
         state = self._miner_states[miner_id]
+        # Set defaults for any field not already present — preserves values
+        # restored from disk by _load_persistent_state on HA restart.
+        _defaults = {
+            "on_since": None, "off_since": None, "off_since_actual": None,
+            "standby_since": None, "last_sensor_update": time.time(),
+            "stats_last_tick": None, "session_runtime_s": 0,
+            "session_energy_wh": 0.0, "today_runtime_s": 0,
+            "today_energy_wh": 0.0, "stats_day": None, "total_starts": 0,
+            "temp_alarm": False, "max_runtime_alarm": False,
+        }
+        for k, v in _defaults.items():
+            state.setdefault(k, v)
+        # First-time entity validation (non-blocking — only logs warnings)
+        self._validate_miner_entities(miner)
+
         current_time = time.time()
         
         mode = miner.get("mode", "manual")
@@ -380,13 +431,14 @@ class MiningEngine:
             state["ramping"] = None
 
         # Continuous Scaling
-        await self._handle_continuous_scaling(miner, state, is_on, mode, current_time)
+        await self._handle_continuous_scaling(miner, state, is_on, mode, current_time, global_pv_surplus)
 
         # MQTT publish (if configured)
         await self._publish_miner_state_mqtt(miner, state)
 
         # Update Surplus for next miner in loop
-        if mode == "pv" and is_on:
+        # Use turn_on/turn_off result to account for miners switched in this tick
+        if mode == "pv" and (is_on or turn_on_condition) and not turn_off_condition:
             power_val = state.get("power", 0)
             if global_pv_surplus is not None:
                 global_pv_surplus -= power_val
@@ -417,10 +469,15 @@ class MiningEngine:
 
         is_on = bool(switches) and all(self.hass.states.get(s).state == "on" if self.hass.states.get(s) else False for s in switches)
         if not plug_on: is_on = False
-        
-        # Power detection fallback
+
+        # Power detection fallback — only when no switch explicitly reports "off".
+        # Prevents false "is_on=True" when the switch is off but the sensor shows standby power.
+        switch_explicitly_off = bool(switches) and all(
+            self.hass.states.get(s) is not None and self.hass.states.get(s).state == "off"
+            for s in switches
+        )
         p_sensor = miner.get("power_consumption_sensor")
-        if not is_on and p_sensor:
+        if not is_on and p_sensor and not switch_explicitly_off and plug_on:
             p_state = self.hass.states.get(p_sensor)
             if p_state and p_state.state not in ["unknown", "unavailable"]:
                 try:
@@ -554,7 +611,7 @@ class MiningEngine:
                 safety_min_soc = battery_min_soc + battery_hysteresis if not is_on else battery_min_soc
                 if not allow_battery or battery_soc >= safety_min_soc:
                     turn_on = True
-                    state["log_reason_on"] = f"(PV {effective_pv}W >= {on_threshold}W)"
+                    state["log_reason_on"] = f"(PV-Überschuss {effective_pv:.0f}W >= {on_threshold}W)"
 
             # Price Awareness: cheap grid allows mining even if PV is insufficient
             price_sensor = miner.get("electricity_price_sensor")
@@ -570,10 +627,10 @@ class MiningEngine:
                         pass
 
             turn_off = False
-            if pv_value <= off_threshold:
+            if effective_pv <= off_threshold:
                 if not allow_battery or battery_soc < battery_min_soc:
                     turn_off = True
-                    state["log_reason_off"] = f"(PV {pv_value}W <= {off_threshold}W)"
+                    state["log_reason_off"] = f"(PV-Überschuss {effective_pv:.0f}W <= {off_threshold}W)"
 
             # Cheap grid price prevents turn-off (but does not independently trigger turn-on)
             if turn_off and price_sensor and price_limit is not None:
@@ -752,8 +809,8 @@ class MiningEngine:
             battery_energy_available = max(0, (current_soc - target_soc) / 100 * capacity * 1000)
             mining_energy_available = battery_energy_available - house_energy_needed
             
-            miner_power = float(miner.get("soft_target_power") or miner.get("max_power") or 1200)
-            if is_on and state.get("power", 0) > 5: miner_power = state["power"]
+            miner_power = max(100.0, float(miner.get("soft_target_power") or miner.get("max_power") or 1200))
+            if is_on and state.get("power", 0) > 100: miner_power = state["power"]
 
             if mining_energy_available <= 0:
                 state["ai_status"] = f"Haus ({int(house_energy_needed)}Wh) vs Akku ({int(battery_energy_available)}Wh){weather_info}"
@@ -860,7 +917,7 @@ class MiningEngine:
             
             if is_on or state.get("ramping") == "up": state["on_since"] = None
             elif state["on_since"] is None: state["on_since"] = current_time
-            elif current_time - state["on_since"] >= delay_seconds or state["hashrate"] > 0:
+            elif current_time - state["on_since"] >= delay_seconds or state.get("hashrate", 0) > 0:
                 # Enforce minimum off-time before turning back on
                 if not self._min_off_elapsed(miner, state, current_time):
                     remaining = int(float(miner.get("min_off_time", 0)) * 60 - (current_time - (state.get("off_since_actual") or 0)))
@@ -871,9 +928,9 @@ class MiningEngine:
                     if coord and coord.miner_obj:
                         try:
                             await coord.miner_obj.resume_mining()
-                            state["on_since_actual"] = current_time
                         except Exception as e:
                             _LOGGER.debug(f"[{miner_name}] resume_mining() failed: {e}")
+                    state["on_since_actual"] = current_time
 
                     # Check Standby Switch recovery
                     standby_switches = [s for s in [miner.get("standby_switch"), miner.get("standby_switch_2")] if s]
@@ -1016,7 +1073,7 @@ class MiningEngine:
                     state["session_energy_wh"] = 0.0
                     state["ramping"] = None
 
-    async def _handle_continuous_scaling(self, miner, state, is_on, mode, current_time):
+    async def _handle_continuous_scaling(self, miner, state, is_on, mode, current_time, pv_surplus=None):
         power_entity = miner.get("power_entity")
         # PV mode always tracks surplus if a power_entity is configured — no opt-in needed
         pv_auto = (mode == "pv" and bool(power_entity))
@@ -1050,9 +1107,10 @@ class MiningEngine:
                 if pv_sensor:
                     pv_state = self.hass.states.get(pv_sensor)
                     if pv_state and pv_state.state not in ["unknown", "unavailable"]:
-                        pv_val = float(pv_state.state)
+                        # Use surplus (house-corrected) if available, else raw PV
+                        pv_val = pv_surplus if pv_surplus is not None else float(pv_state.state)
                         if scaling_mode == "proportional":
-                            # Smooth proportional tracking — use 95% of available PV
+                            # Smooth proportional tracking — use 95% of available surplus
                             factor = float(miner.get("scaling_factor", 0.95))
                             target_power = max(p_min, min(p_max, pv_val * factor))
                         else:
